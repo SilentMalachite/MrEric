@@ -72,7 +72,17 @@ body = resp.body
 | クラス構文エラー | HEEx の `class={[...]}` リスト構文になっているか確認 |
 
 ## ライセンス
-本プロジェクトは MIT License で公開されています。詳細は [LICENSE](./LICENSE) を参照してください。
+本プロジェクトは MIT License で公開されています。詳細は [LICENSE](./LICENSE) を参照してください。著作権表示は GitHub オーナー名 (SilentMalachite) を用いています。
+
+## リポジトリ / Repository
+GitHub: https://github.com/SilentMalachite/MrEric
+
+### Clone
+```
+git clone https://github.com/SilentMalachite/MrEric.git
+cd MrEric
+mix setup
+```
 
 ## Phoenix 公式情報
 - Website: https://www.phoenixframework.org/
