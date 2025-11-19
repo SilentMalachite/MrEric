@@ -11,13 +11,28 @@ Phoenix LiveView を用いたAIエージェントです
 - Precommit チェック (`mix precommit`) による品質担保
 
 ## 開発環境セットアップ
+
+### 環境変数の設定
+
+OpenAI APIを使用するため、以下の環境変数を設定してください：
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key-here"
 ```
+
+OpenAI APIキーは [OpenAI Platform](https://platform.openai.com/api-keys) から取得できます。
+
+### セットアップと起動
+
+```bash
 mix setup
 mix phx.server
 ```
-ブラウザで http://localhost:4000 を開いて確認してください。
+
+ブラウザで [http://localhost:4000](http://localhost:4000) を開いて確認してください。
 
 ### よく使うコマンド
+
 | 作業 | コマンド |
 |------|----------|
 | 依存取得 | `mix deps.get` |

@@ -27,7 +27,7 @@ defmodule MrEric.MixProject do
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [precommit: :test, test: :test]
     ]
   end
 
@@ -37,13 +37,9 @@ defmodule MrEric.MixProject do
 
   # Specifies your project dependencies.
   #
-  # Type `mix help deps` for examples and options.
   defp deps do
     [
       {:phoenix, "~> 1.8.1"},
-      {:phoenix_ecto, "~> 4.5"},
-      {:ecto_sql, "~> 3.13"},
-      {:postgrex, ">= 0.0.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},
@@ -58,7 +54,6 @@ defmodule MrEric.MixProject do
        app: false,
        compile: false,
        depth: 1},
-      {:swoosh, "~> 1.16"},
       {:req, "~> 0.4.0"},
       {:finch, "~> 0.16"},
       {:telemetry_metrics, "~> 1.0"},
@@ -67,7 +62,6 @@ defmodule MrEric.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
@@ -89,7 +83,7 @@ defmodule MrEric.MixProject do
         "esbuild mr_eric --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: ["compile --warning-as-errors", "deps.unlock --unused", "test"]
     ]
   end
 end

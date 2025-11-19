@@ -1,0 +1,19 @@
+<component name="libraryTable">
+  <library name="nimble_ownership" type="mix">
+    <CLASSES>
+      <root url="file://$PROJECT_DIR$/_build/dev/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/dev/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/dev/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/dev/lib/nimble_ownership/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/nimble_ownership/ebin" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="file://$PROJECT_DIR$/deps/nimble_ownership/lib" />
+      <root url="file://$PROJECT_DIR$/deps/nimble_ownership/lib" />
+    </SOURCES>
+  </library>
+</component>

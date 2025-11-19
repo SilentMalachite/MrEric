@@ -13,7 +13,8 @@ defmodule MrEric.OpenAIClient do
 
     request()
     |> Req.post!(url: "/chat/completions", json: body)
-    |> get_in([:body, "choices", Access.at(0), "message", "content"])
+    |> Map.get(:body)
+    |> get_in(["choices", Access.at(0), "message", "content"])
   end
 
   def stream_completion(prompt, pid, model \\ "gpt-4o") do
@@ -38,7 +39,7 @@ defmodule MrEric.OpenAIClient do
               send(pid, {:complete, :ok})
             else
               response = Jason.decode!(chunk)
-              text = get_in(response, ["choices", 0, "delta", "content"]) || ""
+              text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
 
               if text != "" do
                 send(pid, {:chunk, text})
@@ -52,13 +53,20 @@ defmodule MrEric.OpenAIClient do
   end
 
   defp request do
+    options = Application.get_env(:mr_eric, :openai_req_options, [])
+
     Req.new(
       base_url: @base_url,
       finch: MrEric.Finch,
       headers: [
-        {"authorization", "Bearer #{System.fetch_env!("OPENAI_API_KEY")}"},
+        {"authorization", "Bearer #{get_api_key()}"},
         {"content-type", "application/json"}
       ]
     )
+    |> Req.merge(options)
+  end
+
+  defp get_api_key do
+    System.get_env("OPENAI_API_KEY") || "dummy_key"
   end
 end
