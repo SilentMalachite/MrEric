@@ -50,6 +50,41 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
+  # Ensure the appropriate AI provider API key is present in production
+  provider = (Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai") |> String.downcase()
+
+  case provider do
+    "openrouter" ->
+      if is_nil(System.get_env("OPENROUTER_API_KEY")) do
+        raise "environment variable OPENROUTER_API_KEY is missing. Set it to a valid OpenRouter API key in production."
+      end
+
+    "grok" ->
+      if is_nil(System.get_env("GROK_API_KEY")) && is_nil(System.get_env("XAI_API_KEY")) do
+        raise "environment variable GROK_API_KEY (or XAI_API_KEY) is missing. Set it to a valid xAI Grok API key in production."
+      end
+
+    "xai" ->
+      if is_nil(System.get_env("GROK_API_KEY")) && is_nil(System.get_env("XAI_API_KEY")) do
+        raise "environment variable GROK_API_KEY (or XAI_API_KEY) is missing. Set it to a valid xAI Grok API key in production."
+      end
+
+    # Local providers (no API key required by default)
+    "ollama" ->
+      :ok
+
+    "lmstudio" ->
+      :ok
+
+    "llstudio" ->
+      :ok
+
+    _ ->
+      if is_nil(System.get_env("OPENAI_API_KEY")) do
+        raise "environment variable OPENAI_API_KEY is missing. Set it to a valid OpenAI API key in production."
+      end
+  end
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key

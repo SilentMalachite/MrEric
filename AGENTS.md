@@ -1,5 +1,62 @@
 This is a web application written using the Phoenix web framework.
 
+## AI Providers (OpenAI-compatible)
+
+MrEric uses a single client module (`MrEric.OpenAIClient`) to talk to multiple OpenAI-compatible providers:
+
+- OpenAI (`AI_PROVIDER=openai`)
+- Grok / xAI (`AI_PROVIDER=grok` or `xai`)
+- OpenRouter (`AI_PROVIDER=openrouter`)
+- Ollama (local) (`AI_PROVIDER=ollama`)
+- LM Studio / LLStudio (local) (`AI_PROVIDER=lmstudio` or `llstudio`)
+
+Notes:
+
+- All providers are accessed via an OpenAI-compatible endpoint: `/v1/chat/completions`.
+- Local providers (Ollama / LM Studio) do not require API keys; base URLs default to:
+  - Ollama: `http://localhost:11434/v1` (override with `OLLAMA_BASE_URL`)
+  - LM Studio: `http://localhost:1234/v1` (override with `LMSTUDIO_BASE_URL`)
+- OpenRouter supports additional optional headers:
+  - `OPENROUTER_SITE_URL` (or `SITE_URL`) → sets `HTTP-Referer`
+  - `OPENROUTER_APP_NAME` → sets `X-Title`
+- In production, `config/runtime.exs` enforces required environment variables based on the selected provider.
+
+Quick examples:
+
+```bash
+# OpenAI
+export AI_PROVIDER=openai
+export OPENAI_API_KEY="sk-..."
+
+# Grok (xAI)
+export AI_PROVIDER=grok
+export GROK_API_KEY="..."   # or XAI_API_KEY
+
+# OpenRouter
+export AI_PROVIDER=openrouter
+export OPENROUTER_API_KEY="..."
+export OPENROUTER_SITE_URL="https://your.app"
+export OPENROUTER_APP_NAME="MrEric"
+
+# Local: Ollama
+export AI_PROVIDER=ollama
+export OLLAMA_BASE_URL="http://localhost:11434/v1"   # optional
+
+# Local: LM Studio / LLStudio
+export AI_PROVIDER=lmstudio  # or llstudio
+export LMSTUDIO_BASE_URL="http://localhost:1234/v1"  # optional
+```
+
+Elixir usage remains the same regardless of provider:
+
+```elixir
+# Non-streaming
+MrEric.OpenAIClient.chat_completion("Hello", model: "gpt-4o")
+
+# Streaming
+MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
+```
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

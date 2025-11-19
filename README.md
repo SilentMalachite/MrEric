@@ -1,6 +1,6 @@
 # MrEric
 
-Phoenix LiveView を用いた AI エージェントアプリケーションです。OpenAI API を活用し、自然言語でタスクを実行できます。
+Phoenix LiveView を用いた AI エージェントアプリケーションです。OpenAI/Grok/OpenRouter、さらにローカル LLM（Ollama/LM Studio）の OpenAI 互換 API を活用し、自然言語でタスクを実行できます。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Elixir](https://img.shields.io/badge/elixir-1.17-purple.svg)](https://elixir-lang.org)
@@ -11,6 +11,7 @@ Phoenix LiveView を用いた AI エージェントアプリケーションで�
 - [特徴](#特徴)
 - [必要要件](#必要要件)
 - [セットアップ](#セットアップ)
+- [AIプロバイダの切替](#aiプロバイダの切替)
 - [使い方](#使い方)
 - [OpenAI モデル設定](#openai-モデル設定)
 - [開発](#開発)
@@ -36,7 +37,11 @@ Phoenix LiveView を用いた AI エージェントアプリケーションで�
 - **Elixir** 1.17 以上
 - **Erlang/OTP** 25 以上
 - **Node.js** 18 以上 (アセットビルド用)
-- **OpenAI API キー** ([取得方法](https://platform.openai.com/api-keys))
+- 以下のいずれかの API キー（利用するプロバイダに応じて）
+  - OpenAI: OPENAI_API_KEY（[取得方法](https://platform.openai.com/api-keys)）
+  - Grok(xAI): GROK_API_KEY または XAI_API_KEY
+  - OpenRouter: OPENROUTER_API_KEY（[OpenRouter](https://openrouter.ai/)）
+  - ローカル LLM（Ollama/LM Studio）はキー不要
 
 ## 🚀 セットアップ
 
@@ -49,17 +54,44 @@ cd MrEric
 
 ### 2. 環境変数の設定
 
-OpenAI API キーを環境変数に設定します：
+利用する AI プロバイダに応じて環境変数を設定します（未設定時は `openai` が既定）。
+
+例）OpenAI を利用する場合：
 
 ```bash
+export AI_PROVIDER=openai
 export OPENAI_API_KEY="sk-your-api-key-here"
 ```
 
-または `.env` ファイルを作成：
+例）Grok(xAI) を利用する場合：
 
 ```bash
-# .env
-OPENAI_API_KEY=sk-your-api-key-here
+export AI_PROVIDER=grok   # または xai
+export GROK_API_KEY="your-grok-key"   # または XAI_API_KEY
+```
+
+例）OpenRouter を利用する場合：
+
+```bash
+export AI_PROVIDER=openrouter
+export OPENROUTER_API_KEY="your-openrouter-key"
+# 任意（推奨）: OpenRouter のポリシーに基づくヘッダ
+export OPENROUTER_SITE_URL="https://your.app"   # または SITE_URL
+export OPENROUTER_APP_NAME="MrEric"
+```
+
+例）ローカル LLM（Ollama / LM Studio）を利用する場合：
+
+```bash
+# Ollama
+export AI_PROVIDER=ollama
+# 任意: ベースURLの上書き
+export OLLAMA_BASE_URL="http://localhost:11434/v1"
+
+# LM Studio（LLStudio）
+export AI_PROVIDER=lmstudio   # または llstudio
+# 任意: ベースURLの上書き
+export LMSTUDIO_BASE_URL="http://localhost:1234/v1"
 ```
 
 ### 3. 依存関係のインストールと起動
@@ -104,6 +136,23 @@ receive do
   {:complete, :ok} -> IO.puts("\nDone!")
 end
 ```
+
+## 🔁 AIプロバイダの切替
+
+MrEric は OpenAI 互換の `/v1/chat/completions` を提供する複数プロバイダに対応しています。プロバイダの選択は環境変数または `config` で行えます。
+
+- 環境変数: `AI_PROVIDER` に `openai | grok | xai | openrouter | ollama | lmstudio | llstudio`
+- 設定ファイル: `config :mr_eric, :ai_provider, "openai"`
+
+プロバイダ別の要点:
+
+- OpenAI: `OPENAI_API_KEY` 必須（本番では未設定時に起動失敗）
+- Grok(xAI): `GROK_API_KEY` または `XAI_API_KEY` のいずれか必須
+- OpenRouter: `OPENROUTER_API_KEY` 必須。任意ヘッダ `OPENROUTER_SITE_URL`（または `SITE_URL`）、`OPENROUTER_APP_NAME`
+- Ollama: APIキー不要。デフォルト `http://localhost:11434/v1`（`OLLAMA_BASE_URL` で上書き可）
+- LM Studio: APIキー不要。デフォルト `http://localhost:1234/v1`（`LMSTUDIO_BASE_URL` で上書き可）
+
+備考: 本番環境では `config/runtime.exs` にて、選択したプロバイダに応じた必須変数が未設定の場合は起動が失敗するようガードしています。
 
 ## 🤖 OpenAI モデル設定
 
@@ -231,9 +280,9 @@ MrEric/
 - ETS を使用したインメモリストレージ
 
 #### `MrEric.OpenAIClient`
-- OpenAI API との通信
+- OpenAI 互換 API との通信（OpenAI/Grok/OpenRouter/Ollama/LM Studio）
 - ストリーミング応答のサポート
-- 全モデル対応
+- 全モデル対応（プロバイダ側のモデル名で指定）
 
 #### `MrEricWeb.AgentLive`
 - メイン LiveView
@@ -260,13 +309,20 @@ _build/prod/rel/mr_eric/bin/mr_eric start
 
 ### 必要な環境変数
 
-| 変数 | 説明 | 必須 |
-|------|------|------|
-| `OPENAI_API_KEY` | OpenAI API キー | ✅ |
-| `SECRET_KEY_BASE` | Phoenix シークレットキー | ✅ |
-| `PHX_HOST` | ホスト名 | ✅ |
-| `PORT` | ポート番号 | ❌ (デフォルト: 4000) |
-| `DATABASE_URL` | データベースURL | ❌ (未使用) |
+必須変数は選択したプロバイダにより異なります。
+
+- 共通:
+  - `SECRET_KEY_BASE`（必須）
+  - `PHX_HOST`（必須）
+  - `PORT`（任意・デフォルト: 4000）
+
+- プロバイダ別（`AI_PROVIDER` 未指定時は `openai` 扱い）:
+  - `openai`: `OPENAI_API_KEY`（必須）
+  - `grok`/`xai`: `GROK_API_KEY` または `XAI_API_KEY`（いずれか必須）
+  - `openrouter`: `OPENROUTER_API_KEY`（必須）
+    - 任意: `OPENROUTER_SITE_URL`（または `SITE_URL`）、`OPENROUTER_APP_NAME`
+  - `ollama`: なし（任意で `OLLAMA_BASE_URL`）
+  - `lmstudio`/`llstudio`: なし（任意で `LMSTUDIO_BASE_URL`）
 
 ### Docker でのデプロイ
 

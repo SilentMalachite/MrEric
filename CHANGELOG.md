@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Support for multiple AI providers via a single OpenAI-compatible client (`MrEric.OpenAIClient`):
+  - OpenAI (`AI_PROVIDER=openai`)
+  - Grok/xAI (`AI_PROVIDER=grok` or `xai`)
+  - OpenRouter (`AI_PROVIDER=openrouter`), with optional headers `OPENROUTER_SITE_URL`/`SITE_URL` and `OPENROUTER_APP_NAME`
+  - Local LLMs: Ollama (`AI_PROVIDER=ollama`) and LM Studio/LLStudio (`AI_PROVIDER=lmstudio` or `llstudio`)
+
+### Changed
+- Runtime production checks now validate required environment variables based on the selected provider (`config/runtime.exs`).
+
+### Documentation
+- README updated with provider switching guide, environment variables, and local LLM setup.
+- AGENTS.md updated with provider matrix and usage examples.
+
 ## [0.1.0] - 2025-11-19
 
 ### Added

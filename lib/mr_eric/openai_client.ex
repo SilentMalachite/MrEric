@@ -16,7 +16,7 @@ defmodule MrEric.OpenAIClient do
       OpenAIClient.chat_completion("Hello", model: "gpt-3.5-turbo")
   """
 
-  @base_url "https://api.openai.com/v1"
+  @default_base_url "https://api.openai.com/v1"
 
   @doc """
   Performs a chat completion request.
@@ -98,20 +98,67 @@ defmodule MrEric.OpenAIClient do
   defp request do
     options = Application.get_env(:mr_eric, :openai_req_options, [])
 
+    provider = get_provider()
+    base_url = base_url_for(provider)
+    api_key = get_api_key(provider)
+
+    headers_base = [
+      {"content-type", "application/json"}
+    ]
+
+    headers_auth =
+      case api_key do
+        key when is_binary(key) and byte_size(key) > 0 -> [{"authorization", "Bearer #{key}"}]
+        _ -> []
+      end
+
+    headers = headers_auth ++ headers_base ++ provider_extra_headers(provider)
+
     Req.new(
-      base_url: @base_url,
+      base_url: base_url,
       finch: MrEric.Finch,
-      headers: [
-        {"authorization", "Bearer #{get_api_key()}"},
-        {"content-type", "application/json"}
-      ]
+      headers: headers
     )
     |> Req.merge(options)
   end
 
-  defp get_api_key do
-    System.get_env("OPENAI_API_KEY") || "dummy_key"
+  defp get_api_key(:openai), do: System.get_env("OPENAI_API_KEY") || "dummy_key"
+  defp get_api_key(:grok), do: System.get_env("GROK_API_KEY") || System.get_env("XAI_API_KEY") || "dummy_key"
+  defp get_api_key(:openrouter), do: System.get_env("OPENROUTER_API_KEY") || "dummy_key"
+  # Local providers typically do not require an API key; allow optional override
+  defp get_api_key(:ollama), do: System.get_env("OLLAMA_API_KEY")
+  defp get_api_key(:lmstudio), do: System.get_env("LMSTUDIO_API_KEY")
+
+  defp get_provider do
+    case (Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai")
+         |> String.downcase() do
+      "openrouter" -> :openrouter
+      "grok" -> :grok
+      "xai" -> :grok
+      "ollama" -> :ollama
+      "lmstudio" -> :lmstudio
+      "llstudio" -> :lmstudio
+      _ -> :openai
+    end
   end
+
+  defp base_url_for(:openai), do: @default_base_url
+  defp base_url_for(:grok), do: "https://api.x.ai/v1"
+  defp base_url_for(:openrouter), do: "https://openrouter.ai/api/v1"
+  defp base_url_for(:ollama), do: System.get_env("OLLAMA_BASE_URL") || "http://localhost:11434/v1"
+  defp base_url_for(:lmstudio), do: System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
+
+  defp provider_extra_headers(:openrouter) do
+    referer = System.get_env("OPENROUTER_SITE_URL") || System.get_env("SITE_URL")
+    title = System.get_env("OPENROUTER_APP_NAME") || "MrEric"
+
+    Enum.reject([
+      if(referer, do: {"HTTP-Referer", referer}),
+      {"X-Title", title}
+    ], &is_nil/1)
+  end
+
+  defp provider_extra_headers(_), do: []
 
   defp get_default_model do
     Application.get_env(:mr_eric, :openai_model, "gpt-4o")
