@@ -9,7 +9,8 @@ import Config
 
 config :mr_eric,
   ecto_repos: [],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  openai_model: "gpt-4o"
 
 # Configures the endpoint
 config :mr_eric, MrEricWeb.Endpoint,

@@ -1,9 +1,38 @@
 defmodule MrEric.OpenAIClient do
-  @moduledoc false
+  @moduledoc """
+  OpenAI API client for chat completions.
+
+  Supports all OpenAI models including:
+  - GPT-4 models: gpt-4, gpt-4-turbo, gpt-4o, gpt-4o-mini
+  - GPT-3.5 models: gpt-3.5-turbo
+  - O1 models: o1-preview, o1-mini
+
+  Default model can be configured in config.exs:
+
+      config :mr_eric, openai_model: "gpt-4o"
+
+  Or specify per request:
+
+      OpenAIClient.chat_completion("Hello", model: "gpt-3.5-turbo")
+  """
 
   @base_url "https://api.openai.com/v1"
 
-  def chat_completion(prompt, model \\ "gpt-4o") do
+  @doc """
+  Performs a chat completion request.
+
+  ## Options
+
+    - `:model` - OpenAI model to use (default: configured in config.exs)
+
+  ## Examples
+
+      chat_completion("Hello, world!")
+      chat_completion("Write a haiku", model: "gpt-4")
+  """
+  def chat_completion(prompt, opts \\ []) do
+    model = Keyword.get(opts, :model, get_default_model())
+
     body = %{
       model: model,
       messages: [
@@ -17,7 +46,21 @@ defmodule MrEric.OpenAIClient do
     |> get_in(["choices", Access.at(0), "message", "content"])
   end
 
-  def stream_completion(prompt, pid, model \\ "gpt-4o") do
+  @doc """
+  Performs a streaming chat completion request.
+
+  ## Options
+
+    - `:model` - OpenAI model to use (default: configured in config.exs)
+
+  ## Examples
+
+      stream_completion("Tell me a story", self())
+      stream_completion("Write code", self(), model: "gpt-4-turbo")
+  """
+  def stream_completion(prompt, pid, opts \\ []) do
+    model = Keyword.get(opts, :model, get_default_model())
+
     body = %{
       model: model,
       stream: true,
@@ -68,5 +111,9 @@ defmodule MrEric.OpenAIClient do
 
   defp get_api_key do
     System.get_env("OPENAI_API_KEY") || "dummy_key"
+  end
+
+  defp get_default_model do
+    Application.get_env(:mr_eric, :openai_model, "gpt-4o")
   end
 end

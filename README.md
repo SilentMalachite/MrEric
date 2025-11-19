@@ -7,6 +7,7 @@ Phoenix LiveView を用いたAIエージェントです
 - Phoenix 1.8 + LiveView 1.1 採用
 - Bandit による HTTP サーバ
 - Req による HTTP クライアント（`:httpoison`, `:tesla`, `:httpc` は不使用）
+- OpenAI API 統合（全モデル対応）
 - Tailwind CSS v4（`app.css` の新しい `@import` / `@source` 構文）
 - Precommit チェック (`mix precommit`) による品質担保
 
@@ -21,6 +22,30 @@ export OPENAI_API_KEY="your-openai-api-key-here"
 ```
 
 OpenAI APIキーは [OpenAI Platform](https://platform.openai.com/api-keys) から取得できます。
+
+### OpenAIモデルの設定
+
+デフォルトでは `gpt-4o` が使用されますが、`config/config.exs` で変更可能です：
+
+```elixir
+config :mr_eric,
+  openai_model: "gpt-3.5-turbo"  # または "gpt-4", "gpt-4-turbo", "o1-preview" など
+```
+
+利用可能なモデル：
+- GPT-4シリーズ: `gpt-4`, `gpt-4-turbo`, `gpt-4o`, `gpt-4o-mini`
+- GPT-3.5: `gpt-3.5-turbo`
+- O1シリーズ: `o1-preview`, `o1-mini`
+
+コードから直接モデルを指定することも可能です：
+
+```elixir
+# デフォルトモデルを使用
+MrEric.OpenAIClient.chat_completion("Hello")
+
+# 特定のモデルを指定
+MrEric.OpenAIClient.chat_completion("Hello", model: "gpt-3.5-turbo")
+```
 
 ### セットアップと起動
 
