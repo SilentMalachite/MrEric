@@ -3,41 +3,50 @@ defmodule MrEricWeb.AgentLive do
 
   alias MrEric.Agent
   alias MrEric.OpenAIClient
+  alias MrEricWeb.Layouts
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, loading: false, response: "", history: Agent.history(), task: "")}
+    {:ok,
+     assign(socket,
+       loading: false,
+       response: "",
+       history: Agent.history(),
+       form: to_form(%{"task" => ""})
+     )}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="max-w-3xl mx-auto space-y-6">
-      <form class="space-y-3" id="task-form" phx-submit="execute">
-        <.input type="text" name="task" value={@task} placeholder="Enter task for AI agent" />
-        <.button type="submit" disabled={@loading}>Execute</.button>
-      </form>
+    <Layouts.app flash={@flash}>
+      <div class="max-w-3xl mx-auto space-y-6">
+        <.form for={@form} id="task-form" phx-submit="execute" class="space-y-3">
+          <.input field={@form[:task]} type="text" placeholder="Enter task for AI agent" />
+          <.button type="submit" disabled={@loading}>Execute</.button>
+        </.form>
 
-      <div :if={@response != ""} class="rounded-md border p-4 bg-zinc-50">
-        <h2 class="font-semibold mb-2">Streaming Response</h2>
-        <pre class="whitespace-pre-wrap text-sm"><%= @response %></pre>
-      </div>
+        <div :if={@response != ""} class="rounded-md border p-4 bg-zinc-50">
+          <h2 class="font-semibold mb-2">Streaming Response</h2>
+          <pre class="whitespace-pre-wrap text-sm">{@response}</pre>
+        </div>
 
-      <div :if={@history != []} class="space-y-4">
-        <h2 class="font-semibold text-lg">History</h2>
-        <div :for={entry <- @history} class="rounded-lg border p-3 space-y-2">
-          <p><strong>Task:</strong> {entry.task}</p>
-          <div>
-            <strong>Plan:</strong>
-            <pre class="whitespace-pre-wrap text-sm"><%= entry.plan %></pre>
-          </div>
-          <div>
-            <strong>Code:</strong>
-            <pre class="whitespace-pre-wrap text-sm"><%= entry.code %></pre>
+        <div :if={@history != []} class="space-y-4">
+          <h2 class="font-semibold text-lg">History</h2>
+          <div :for={entry <- @history} class="rounded-lg border p-3 space-y-2">
+            <p><strong>Task:</strong> {entry.task}</p>
+            <div>
+              <strong>Plan:</strong>
+              <pre class="whitespace-pre-wrap text-sm">{entry.plan}</pre>
+            </div>
+            <div>
+              <strong>Code:</strong>
+              <pre class="whitespace-pre-wrap text-sm">{entry.code}</pre>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </Layouts.app>
     """
   end
 
@@ -59,7 +68,7 @@ defmodule MrEricWeb.AgentLive do
 
       Task.start(fn -> OpenAIClient.stream_completion(task, pid) end)
 
-      {:noreply, assign(socket, loading: true, response: "", task: task)}
+      {:noreply, assign(socket, loading: true, response: "", form: to_form(%{"task" => task}))}
     end
   end
 
