@@ -35,3 +35,6 @@ mr_eric-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Mac
+.DS_Store
+

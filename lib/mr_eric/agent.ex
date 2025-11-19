@@ -1,4 +1,7 @@
 defmodule MrEric.Agent do
+  @moduledoc """
+  Manages the state and execution history of AI agent tasks.
+  """
   use GenServer
 
   alias MrEric.OpenAIClient

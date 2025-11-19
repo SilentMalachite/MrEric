@@ -57,19 +57,22 @@ defmodule MrEricWeb.AgentLive do
     if task == "" do
       {:noreply, socket}
     else
-      pid = self()
-
-      Task.start(fn ->
-        case Agent.execute(task) do
-          {:ok, entry} -> send(pid, {:history_updated, entry})
-          {:error, reason} -> send(pid, {:agent_error, reason})
-        end
-      end)
-
-      Task.start(fn -> OpenAIClient.stream_completion(task, pid) end)
-
+      execute_task(task)
       {:noreply, assign(socket, loading: true, response: "", form: to_form(%{"task" => task}))}
     end
+  end
+
+  defp execute_task(task) do
+    pid = self()
+
+    Task.start(fn ->
+      case Agent.execute(task) do
+        {:ok, entry} -> send(pid, {:history_updated, entry})
+        {:error, reason} -> send(pid, {:agent_error, reason})
+      end
+    end)
+
+    Task.start(fn -> OpenAIClient.stream_completion(task, pid) end)
   end
 
   @impl true
