@@ -1,6 +1,7 @@
 # MrEric
 
-Phoenix LiveView を用いた Web アプリケーションです。高速な開発体験とリアルタイム UI を重視しています。
+Phoenix LiveView を用いたAIエージェントです
+作業中
 
 ## 特徴 / Features
 - Phoenix 1.8 + LiveView 1.1 採用
