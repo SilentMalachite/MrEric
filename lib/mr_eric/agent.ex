@@ -30,14 +30,24 @@ defmodule MrEric.Agent do
   @impl true
   def handle_call({:execute, task}, _from, state) do
     plan_prompt = "Task: #{task}. Create a step-by-step plan to code this."
-    plan = OpenAIClient.chat_completion(plan_prompt)
 
-    code_prompt = "Based on plan: #{plan}. Generate Elixir code."
-    code = OpenAIClient.chat_completion(code_prompt)
+    with {:ok, plan} <- OpenAIClient.chat_completion(plan_prompt),
+         code_prompt = "Based on plan: #{plan}. Generate Elixir code.",
+         {:ok, code} <- OpenAIClient.chat_completion(code_prompt) do
+      entry = %{
+        id: System.unique_integer([:positive]),
+        task: task,
+        plan: plan,
+        code: code,
+        inserted_at: DateTime.utc_now()
+      }
 
-    entry = %{task: task, plan: plan, code: code, inserted_at: DateTime.utc_now()}
-    history = [entry | state.history]
+      history = [entry | state.history]
 
-    {:reply, {:ok, entry}, %{state | history: history}}
+      {:reply, {:ok, entry}, %{state | history: history}}
+    else
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 end

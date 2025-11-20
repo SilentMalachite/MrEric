@@ -37,6 +37,18 @@ topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
+// Theme toggle
+window.addEventListener("phx:set-theme", e => {
+  const theme = e.target.getAttribute("data-phx-theme")
+  if(theme === "system"){
+    document.documentElement.removeAttribute("data-theme")
+    localStorage.removeItem("theme")
+  } else {
+    document.documentElement.setAttribute("data-theme", theme)
+    localStorage.setItem("theme", theme)
+  }
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

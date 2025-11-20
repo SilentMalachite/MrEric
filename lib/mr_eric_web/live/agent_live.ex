@@ -20,14 +20,15 @@ defmodule MrEricWeb.AgentLive do
     default_model = Application.get_env(:mr_eric, :openai_model, "gpt-4o")
 
     {:ok,
-     assign(socket,
+     socket
+     |> assign(
        loading: false,
        response: "",
-       history: Agent.history(),
        selected_model: default_model,
        available_models: @available_models,
        form: to_form(%{"task" => ""})
-     )}
+     )
+     |> stream(:history, Agent.history())}
   end
 
   @impl true
@@ -37,19 +38,19 @@ defmodule MrEricWeb.AgentLive do
       <div class="max-w-4xl mx-auto space-y-6">
         <div class="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
           <h1 class="text-2xl font-bold mb-4">MrEric AI Agent</h1>
-          
+
           <.form for={@form} id="task-form" phx-submit="execute" class="space-y-4">
             <div>
               <label class="block text-sm font-medium text-zinc-700 mb-2">
                 OpenAI Model
               </label>
-              <select 
-                name="model" 
+              <select
+                name="model"
                 phx-change="change_model"
                 class="w-full rounded-lg border-zinc-300 focus:border-zinc-400 focus:ring focus:ring-zinc-200 focus:ring-opacity-50"
               >
-                <option 
-                  :for={{label, value} <- @available_models} 
+                <option
+                  :for={{label, value} <- @available_models}
                   value={value}
                   selected={value == @selected_model}
                 >
@@ -65,16 +66,16 @@ defmodule MrEricWeb.AgentLive do
               <label class="block text-sm font-medium text-zinc-700 mb-2">
                 Task Description
               </label>
-              <.input 
-                field={@form[:task]} 
-                type="text" 
-                placeholder="Enter task for AI agent..." 
+              <.input
+                field={@form[:task]}
+                type="text"
+                placeholder="Enter task for AI agent..."
                 class="w-full"
               />
             </div>
 
-            <.button 
-              type="submit" 
+            <.button
+              type="submit"
               disabled={@loading}
               class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -98,12 +99,13 @@ defmodule MrEricWeb.AgentLive do
           <pre class="whitespace-pre-wrap text-sm font-mono text-zinc-800 bg-white p-4 rounded border">{@response}</pre>
         </div>
 
-        <div :if={@history != []} class="space-y-4">
+        <div class="space-y-4">
           <h2 class="font-semibold text-xl flex items-center">
             <.icon name="hero-clock" class="w-6 h-6 mr-2" />
             Execution History
           </h2>
-          <div :for={entry <- @history} class="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm space-y-3">
+          <div id="history" phx-update="stream" class="space-y-4">
+            <div :for={{id, entry} <- @streams.history} id={id} class="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm space-y-3">
             <div class="flex items-start">
               <.icon name="hero-chat-bubble-left-right" class="w-5 h-5 mt-0.5 mr-2 text-zinc-400" />
               <div class="flex-1">
@@ -133,6 +135,7 @@ defmodule MrEricWeb.AgentLive do
             </div>
           </div>
         </div>
+      </div>
       </div>
     </Layouts.app>
     """
@@ -179,8 +182,8 @@ defmodule MrEricWeb.AgentLive do
   end
 
   @impl true
-  def handle_info({:history_updated, _entry}, socket) do
-    {:noreply, assign(socket, history: Agent.history())}
+  def handle_info({:history_updated, entry}, socket) do
+    {:noreply, stream_insert(socket, :history, entry, at: 0)}
   end
 
   @impl true

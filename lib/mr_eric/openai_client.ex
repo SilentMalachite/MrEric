@@ -40,10 +40,13 @@ defmodule MrEric.OpenAIClient do
       ]
     }
 
-    request()
-    |> Req.post!(url: "/chat/completions", json: body)
-    |> Map.get(:body)
-    |> get_in(["choices", Access.at(0), "message", "content"])
+    with {:ok, req} <- request(),
+         {:ok, %{status: 200, body: body}} <- Req.post(req, url: "/chat/completions", json: body) do
+      {:ok, get_in(body, ["choices", Access.at(0), "message", "content"])}
+    else
+      {:ok, %{status: status, body: body}} -> {:error, %{status: status, body: body}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
@@ -67,32 +70,41 @@ defmodule MrEric.OpenAIClient do
       messages: [%{role: "user", content: prompt}]
     }
 
-    request()
-    |> Req.post!(
-      url: "/chat/completions",
-      json: body,
-      into: fn
-        {:data, data}, acc ->
-          data
-          |> String.split("data: ")
-          |> Enum.map(&String.trim/1)
-          |> Enum.reject(&(&1 == ""))
-          |> Enum.each(fn chunk ->
-            if chunk == "[DONE]" do
-              send(pid, {:complete, :ok})
-            else
-              response = Jason.decode!(chunk)
-              text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
+    case request() do
+      {:ok, req} ->
+        Req.post(req,
+          url: "/chat/completions",
+          json: body,
+          into: fn
+            {:data, data}, acc ->
+              data
+              |> String.split("data: ")
+              |> Enum.map(&String.trim/1)
+              |> Enum.reject(&(&1 == ""))
+              |> Enum.each(fn chunk ->
+                if chunk == "[DONE]" do
+                  send(pid, {:complete, :ok})
+                else
+                  case Jason.decode(chunk) do
+                    {:ok, response} ->
+                      text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
+                      if text != "", do: send(pid, {:chunk, text})
+                    _ -> :ok
+                  end
+                end
+              end)
 
-              if text != "" do
-                send(pid, {:chunk, text})
-              end
-            end
-          end)
+              {:cont, acc}
+          end
+        )
+        |> case do
+          {:ok, _} -> :ok
+          {:error, reason} -> send(pid, {:agent_error, reason})
+        end
 
-          {:cont, acc}
-      end
-    )
+      {:error, reason} ->
+        send(pid, {:agent_error, reason})
+    end
   end
 
   defp request do
@@ -102,29 +114,34 @@ defmodule MrEric.OpenAIClient do
     base_url = base_url_for(provider)
     api_key = get_api_key(provider)
 
-    headers_base = [
-      {"content-type", "application/json"}
-    ]
+    if is_nil(api_key) and provider in [:openai, :grok, :openrouter] do
+      {:error, :missing_api_key}
+    else
+      headers_base = [{"content-type", "application/json"}]
 
-    headers_auth =
-      case api_key do
-        key when is_binary(key) and byte_size(key) > 0 -> [{"authorization", "Bearer #{key}"}]
-        _ -> []
-      end
+      headers_auth =
+        case api_key do
+          key when is_binary(key) and byte_size(key) > 0 -> [{"authorization", "Bearer #{key}"}]
+          _ -> []
+        end
 
-    headers = headers_auth ++ headers_base ++ provider_extra_headers(provider)
+      headers = headers_auth ++ headers_base ++ provider_extra_headers(provider)
 
-    Req.new(
-      base_url: base_url,
-      finch: MrEric.Finch,
-      headers: headers
-    )
-    |> Req.merge(options)
+      req =
+        Req.new(
+          base_url: base_url,
+          finch: MrEric.Finch,
+          headers: headers
+        )
+        |> Req.merge(options)
+
+      {:ok, req}
+    end
   end
 
-  defp get_api_key(:openai), do: System.get_env("OPENAI_API_KEY") || "dummy_key"
-  defp get_api_key(:grok), do: System.get_env("GROK_API_KEY") || System.get_env("XAI_API_KEY") || "dummy_key"
-  defp get_api_key(:openrouter), do: System.get_env("OPENROUTER_API_KEY") || "dummy_key"
+  defp get_api_key(:openai), do: System.get_env("OPENAI_API_KEY")
+  defp get_api_key(:grok), do: System.get_env("GROK_API_KEY") || System.get_env("XAI_API_KEY")
+  defp get_api_key(:openrouter), do: System.get_env("OPENROUTER_API_KEY")
   # Local providers typically do not require an API key; allow optional override
   defp get_api_key(:ollama), do: System.get_env("OLLAMA_API_KEY")
   defp get_api_key(:lmstudio), do: System.get_env("LMSTUDIO_API_KEY")
