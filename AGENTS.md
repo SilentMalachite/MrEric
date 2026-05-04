@@ -83,6 +83,25 @@ MrEric.OpenAIClient.list_models(:openai, [])
 - Never expose API keys, Authorization headers, cookies, or raw provider secrets in PubSub events, assigns, logs intended for users, templates, or browser-side JavaScript.
 - Do not implement ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, or scraping. Use only the configured OpenAI-compatible API providers.
 
+## Phase 5A Tools / approval flow
+
+- Tool implementations live under `MrEric.Tools` and must implement `MrEric.Tools.Tool`.
+- Built-in tools are registered through `MrEric.Tools.Registry`: `:file_read`, `:file_write_proposal`, `:shell_command`, `:git_status`, and `:git_diff`.
+- All tool execution must go through `MrEric.Tools.Executor`, which calls `MrEric.Tools.Policy` before running a tool.
+- File paths must resolve inside the configured workspace. Reject traversal, absolute paths outside the workspace, protected secret paths, and symlinks that can escape the workspace.
+- Protect likely secret files, including `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
+- `:shell_command` must always require approval. Do not bypass the approval request for shell execution.
+- Reject dangerous or mutating shell commands. `:shell_command` should stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, and unlisted commands.
+- Do not implement real file writes in Phase 5A. `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
+- Do not implement `git commit`, `git push`, `git reset`, `git clean`, RAG, MCP, or a full Orchestrator tool loop in Phase 5A.
+- Tool PubSub events use the current run topic `"runs:#{run_id}"`:
+  - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
+  - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, reason: reason}}`
+  - `{:tool_approval_resolved, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, approved: boolean}}`
+  - `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
+  - `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
+- Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

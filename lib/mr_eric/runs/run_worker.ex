@@ -9,8 +9,10 @@ defmodule MrEric.Runs.RunWorker do
   alias MrEric.Orchestrator
   alias MrEric.Runs.Events
   alias MrEric.Runs.Run
+  alias MrEric.Tools.Executor
 
   @registry MrEric.Runs.Registry
+  @run_events Events.names()
 
   def start_link(opts) do
     run = Keyword.fetch!(opts, :run)
@@ -50,6 +52,28 @@ defmodule MrEric.Runs.RunWorker do
     end
   end
 
+  def approve_tool(pid, approval_id) when is_pid(pid) do
+    GenServer.call(pid, {:approve_tool, approval_id})
+  end
+
+  def approve_tool(run_id, approval_id) do
+    case lookup(run_id) do
+      {:ok, pid} -> approve_tool(pid, approval_id)
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def deny_tool(pid, approval_id) when is_pid(pid) do
+    GenServer.call(pid, {:deny_tool, approval_id})
+  end
+
+  def deny_tool(run_id, approval_id) do
+    case lookup(run_id) do
+      {:ok, pid} -> deny_tool(pid, approval_id)
+      :error -> {:error, :not_found}
+    end
+  end
+
   def via(run_id), do: {:via, Registry, {@registry, run_id}}
 
   @impl true
@@ -65,7 +89,8 @@ defmodule MrEric.Runs.RunWorker do
       opts: worker_opts,
       task: nil,
       cancelled?: false,
-      history_recorded?: false
+      history_recorded?: false,
+      pending_tool_approvals: %{}
     }
 
     if auto_start do
@@ -99,6 +124,11 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
+  def handle_continue({:execute_approved_tool, request}, state) do
+    {:noreply, execute_tool_request(request, state)}
+  end
+
+  @impl true
   def handle_call(:get_run, _from, state) do
     {:reply, {:ok, state.run}, state}
   end
@@ -113,43 +143,93 @@ defmodule MrEric.Runs.RunWorker do
 
         {event, payload} = Events.normalize_event(state.run.id, {:run_cancelled, %{}})
         run = Run.apply_event(state.run, {event, payload})
+
+        state =
+          state
+          |> Map.put(:run, run)
+          |> Map.put(:task, nil)
+          |> Map.put(:cancelled?, true)
+          |> maybe_resolve_pending_tool_approvals(:run_cancelled)
+
         Events.broadcast(run.id, {event, payload})
 
-        %{state | run: run, task: nil, cancelled?: true}
+        state
       end
 
     {:reply, :ok, state}
   end
 
   @impl true
-  def handle_info({event, payload}, state)
-      when event in [
-             :run_started,
-             :stage_started,
-             :stage_chunk,
-             :stage_completed,
-             :stage_failed,
-             :run_completed,
-             :run_failed,
-             :run_cancelled
-           ] do
+  def handle_call({:approve_tool, approval_id}, _from, state) do
+    if Run.terminal?(state.run) do
+      {:reply, {:error, :not_found}, %{state | pending_tool_approvals: %{}}}
+    else
+      case Map.pop(state.pending_tool_approvals, approval_id) do
+        {nil, _pending} ->
+          {:reply, {:error, :not_found}, state}
+
+        {request, pending} ->
+          Events.broadcast(
+            state.run.id,
+            {:tool_approval_resolved, Map.merge(request, %{approved: true})}
+          )
+
+          {:reply, :ok, %{state | pending_tool_approvals: pending},
+           {:continue, {:execute_approved_tool, request}}}
+      end
+    end
+  end
+
+  @impl true
+  def handle_call({:deny_tool, approval_id}, _from, state) do
+    case Map.pop(state.pending_tool_approvals, approval_id) do
+      {nil, _pending} ->
+        {:reply, {:error, :not_found}, state}
+
+      {request, pending} ->
+        broadcast_tool_approval_resolved(state.run.id, request, false, "Tool request denied.")
+
+        Events.broadcast(state.run.id, {:tool_failed, Map.merge(request, %{error: :tool_denied})})
+
+        {:reply, :ok, %{state | pending_tool_approvals: pending}}
+    end
+  end
+
+  @impl true
+  def handle_info({event, payload}, state) when event in @run_events do
     if state.cancelled? and event != :run_cancelled do
       {:noreply, state}
     else
       {event, payload} = Events.normalize_event(state.run.id, {event, payload})
 
-      run =
-        state.run
-        |> Run.apply_event({event, payload})
-
-      Events.broadcast(run.id, {event, payload})
+      run = Run.apply_event(state.run, {event, payload})
 
       state =
         state
         |> Map.put(:run, run)
+        |> maybe_resolve_pending_tool_approvals(event)
+
+      state =
+        state
         |> maybe_record_history(event)
 
+      Events.broadcast(run.id, {event, payload})
+
       {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:tool_call, payload}, state) do
+    cond do
+      state.cancelled? ->
+        {:noreply, state}
+
+      Run.terminal?(state.run) ->
+        {:noreply, state}
+
+      true ->
+        {:noreply, prepare_tool_call(payload, state)}
     end
   end
 
@@ -172,8 +252,15 @@ defmodule MrEric.Runs.RunWorker do
         true ->
           {event, payload} = Events.normalize_event(state.run.id, {:run_failed, %{error: reason}})
           run = Run.apply_event(state.run, {event, payload})
+
+          state =
+            state
+            |> Map.put(:run, run)
+            |> Map.put(:task, nil)
+            |> maybe_resolve_pending_tool_approvals(:run_failed)
+
           Events.broadcast(run.id, {event, payload})
-          %{state | run: run, task: nil}
+          state
       end
 
     {:noreply, state}
@@ -208,6 +295,121 @@ defmodule MrEric.Runs.RunWorker do
 
   defp shutdown_task(nil), do: :ok
   defp shutdown_task(task), do: Task.shutdown(task, :brutal_kill)
+
+  defp maybe_resolve_pending_tool_approvals(state, event)
+       when event in [:run_completed, :run_failed, :run_cancelled] do
+    Enum.each(state.pending_tool_approvals, fn {_approval_id, request} ->
+      broadcast_tool_approval_resolved(
+        state.run.id,
+        request,
+        false,
+        "Run finished before approval."
+      )
+    end)
+
+    %{state | pending_tool_approvals: %{}}
+  end
+
+  defp maybe_resolve_pending_tool_approvals(state, _event), do: state
+
+  defp broadcast_tool_approval_resolved(run_id, request, approved, reason) do
+    Events.broadcast(
+      run_id,
+      {:tool_approval_resolved, Map.merge(request, %{approved: approved, reason: reason})}
+    )
+  end
+
+  defp prepare_tool_call(payload, state) when is_map(payload) do
+    tool = Map.get(payload, :tool) || Map.get(payload, "tool")
+    args = Map.get(payload, :args) || Map.get(payload, "args") || %{}
+
+    tool_call_id =
+      Map.get(payload, :tool_call_id) || Map.get(payload, "tool_call_id") || new_id("tool-call")
+
+    approval_id = Map.get(payload, :approval_id) || Map.get(payload, "approval_id")
+    opts = tool_opts(state, tool_call_id, approval_id)
+
+    case Executor.execute(tool, args, opts) do
+      {:ok, result} ->
+        request = %{tool: tool, args: args, tool_call_id: tool_call_id}
+
+        state
+        |> broadcast_tool_started(request)
+        |> broadcast_tool_completed(request, result)
+
+      {:approval_required, request} ->
+        Events.broadcast(state.run.id, {:tool_approval_requested, request})
+        put_in(state.pending_tool_approvals[request.approval_id], request)
+
+      {:error, reason} ->
+        Events.broadcast(state.run.id, {
+          :tool_failed,
+          %{tool: tool, args: args, tool_call_id: tool_call_id, error: reason}
+        })
+
+        state
+    end
+  end
+
+  defp prepare_tool_call(_payload, state), do: state
+
+  defp execute_tool_request(request, state) do
+    state
+    |> broadcast_tool_started(request)
+    |> do_execute_tool_request(request)
+  end
+
+  defp do_execute_tool_request(state, request) do
+    case Executor.execute_approved(request, tool_opts(state, request.tool_call_id, nil)) do
+      {:ok, result} -> broadcast_tool_completed(state, request, result)
+      {:error, reason} -> broadcast_tool_failed(state, request, reason)
+    end
+  end
+
+  defp broadcast_tool_started(state, request) do
+    Events.broadcast(
+      state.run.id,
+      {:tool_started, Map.take(request, [:tool, :args, :tool_call_id])}
+    )
+
+    state
+  end
+
+  defp broadcast_tool_completed(state, request, result) do
+    Events.broadcast(
+      state.run.id,
+      {:tool_completed,
+       Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{result: result})}
+    )
+
+    state
+  end
+
+  defp broadcast_tool_failed(state, request, reason) do
+    Events.broadcast(
+      state.run.id,
+      {:tool_failed,
+       Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{error: reason})}
+    )
+
+    state
+  end
+
+  defp tool_opts(state, tool_call_id, nil) do
+    state.opts
+    |> Keyword.put(:tool_call_id, tool_call_id)
+    |> Keyword.put_new(:workspace_root, File.cwd!())
+  end
+
+  defp tool_opts(state, tool_call_id, approval_id) do
+    state
+    |> tool_opts(tool_call_id, nil)
+    |> Keyword.put(:approval_id, approval_id)
+  end
+
+  defp new_id(prefix) do
+    prefix <> "-" <> Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
+  end
 
   defp maybe_record_history(%{history_recorded?: true} = state, _event), do: state
   defp maybe_record_history(state, event) when event != :run_completed, do: state

@@ -8,16 +8,7 @@ defmodule MrEricWeb.AgentLive do
   alias MrEric.Runs.Run
   alias MrEricWeb.Layouts
 
-  @run_events [
-    :run_started,
-    :stage_started,
-    :stage_chunk,
-    :stage_completed,
-    :stage_failed,
-    :run_completed,
-    :run_failed,
-    :run_cancelled
-  ]
+  @run_events Events.names()
 
   @impl true
   def mount(_params, _session, socket) do
@@ -36,6 +27,8 @@ defmodule MrEricWeb.AgentLive do
        available_models: available_models,
        current_run: Run.blank(provider: selected_provider, model: selected_model),
        stage_roles: Run.roles(),
+       tool_approvals: %{},
+       tool_events: [],
        form: to_form(%{"task" => ""})
      )
      |> stream(:history, Agent.history())}
@@ -162,6 +155,8 @@ defmodule MrEricWeb.AgentLive do
             </div>
           </div>
 
+          <.tool_activity approvals={@tool_approvals} events={@tool_events} />
+
           <div class="grid gap-4 lg:grid-cols-2">
             <.stage_panel
               :for={role <- @stage_roles}
@@ -246,6 +241,89 @@ defmodule MrEricWeb.AgentLive do
     """
   end
 
+  attr :approvals, :map, required: true
+  attr :events, :list, required: true
+
+  def tool_activity(assigns) do
+    ~H"""
+    <section
+      id="tool-activity"
+      class={[
+        "space-y-3",
+        !tool_activity_visible?(@approvals, @events) && "hidden"
+      ]}
+    >
+      <div class="flex items-center gap-2">
+        <.icon name="hero-command-line" class="h-5 w-5 text-zinc-600" />
+        <h2 class="text-lg font-semibold text-zinc-950">Tool Activity</h2>
+      </div>
+
+      <div id="tool-approvals" class="grid gap-3 lg:grid-cols-2">
+        <div
+          :for={approval <- pending_tool_approvals(@approvals)}
+          id={"tool-approval-#{dom_id(approval.tool_call_id)}"}
+          class="rounded-lg border border-amber-200 bg-amber-50 p-4 shadow-sm"
+        >
+          <div class="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <p class="text-sm font-semibold text-amber-950">
+                {tool_name(approval.tool)} requires approval
+              </p>
+              <p class="mt-1 text-xs text-amber-800">{approval.reason}</p>
+            </div>
+            <span class={status_badge_class(:reviewing)}>pending</span>
+          </div>
+
+          <pre class="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-amber-200 bg-white p-3 text-xs text-zinc-800">{format_tool_payload(approval.args)}</pre>
+
+          <div class="mt-3 flex gap-2">
+            <button
+              id={"approve-tool-#{dom_id(approval.tool_call_id)}"}
+              type="button"
+              phx-click="approve_tool"
+              phx-value-approval-id={approval.approval_id}
+              class="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            >
+              <.icon name="hero-check" class="h-4 w-4" /> Approve
+            </button>
+
+            <button
+              id={"deny-tool-#{dom_id(approval.tool_call_id)}"}
+              type="button"
+              phx-click="deny_tool"
+              phx-value-approval-id={approval.approval_id}
+              class="inline-flex items-center gap-2 rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:border-red-300 hover:bg-red-50"
+            >
+              <.icon name="hero-x-mark" class="h-4 w-4" /> Deny
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="tool-events" class="space-y-2">
+        <div
+          :for={event <- @events}
+          id={"tool-event-#{dom_id(event.tool_call_id)}-#{event.status}"}
+          class="rounded-lg border border-zinc-200 bg-white p-3 shadow-sm"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-zinc-900">{tool_name(event.tool)}</p>
+              <p class="mt-1 font-mono text-xs text-zinc-500">{event.tool_call_id}</p>
+            </div>
+            <span class={status_badge_class(event.status)}>{status_label(event.status)}</span>
+          </div>
+
+          <pre
+            :if={tool_event_body(event) != ""}
+            class="mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-800"
+          >{tool_event_body(event)}</pre>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
   attr :id, :string, required: true
   attr :title, :string, required: true
   attr :icon, :string, required: true
@@ -327,6 +405,8 @@ defmodule MrEricWeb.AgentLive do
              loading: true,
              response: "",
              current_run: run,
+             tool_approvals: %{},
+             tool_events: [],
              form: to_form(%{"task" => task})
            )}
 
@@ -338,8 +418,39 @@ defmodule MrEricWeb.AgentLive do
             )
             |> Run.apply_event({:run_failed, %{error: reason}})
 
-          {:noreply, assign(socket, loading: false, current_run: run, response: run.error)}
+          {:noreply,
+           assign(socket,
+             loading: false,
+             current_run: run,
+             response: run.error,
+             tool_approvals: %{},
+             tool_events: []
+           )}
       end
+    end
+  end
+
+  @impl true
+  def handle_event("approve_tool", %{"approval-id" => approval_id}, socket) do
+    case socket.assigns.current_run.id do
+      nil ->
+        {:noreply, socket}
+
+      run_id ->
+        _result = Runs.approve_tool(run_id, approval_id)
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("deny_tool", %{"approval-id" => approval_id}, socket) do
+    case socket.assigns.current_run.id do
+      nil ->
+        {:noreply, socket}
+
+      run_id ->
+        _result = Runs.deny_tool(run_id, approval_id)
+        {:noreply, socket}
     end
   end
 
@@ -375,6 +486,7 @@ defmodule MrEricWeb.AgentLive do
           response: run.error || run.final
         )
         |> maybe_insert_history(event, run)
+        |> apply_tool_event(event, payload)
 
       {:noreply, socket}
     else
@@ -431,6 +543,54 @@ defmodule MrEricWeb.AgentLive do
 
   defp maybe_insert_history(socket, _event, _run), do: socket
 
+  defp apply_tool_event(socket, :tool_approval_requested, payload) do
+    approval =
+      payload
+      |> Map.take([:approval_id, :tool_call_id, :tool, :args, :reason, :requested_at])
+      |> Map.put_new(:args, %{})
+
+    assign(
+      socket,
+      :tool_approvals,
+      Map.put(socket.assigns.tool_approvals, approval.approval_id, approval)
+    )
+  end
+
+  defp apply_tool_event(socket, :tool_approval_resolved, payload) do
+    status = if Map.get(payload, :approved), do: :approved, else: :denied
+
+    socket
+    |> assign(:tool_approvals, Map.delete(socket.assigns.tool_approvals, payload.approval_id))
+    |> upsert_tool_event(payload, status)
+  end
+
+  defp apply_tool_event(socket, :tool_started, payload),
+    do: upsert_tool_event(socket, payload, :running)
+
+  defp apply_tool_event(socket, :tool_completed, payload),
+    do: upsert_tool_event(socket, payload, :completed)
+
+  defp apply_tool_event(socket, :tool_failed, payload),
+    do: upsert_tool_event(socket, payload, :failed)
+
+  defp apply_tool_event(socket, _event, _payload), do: socket
+
+  defp upsert_tool_event(socket, payload, status) do
+    event =
+      payload
+      |> Map.take([:tool_call_id, :tool, :args, :result, :error, :approved, :reason])
+      |> Map.put(:status, status)
+      |> Map.put_new(:args, %{})
+
+    key = {event.tool_call_id, event.status}
+
+    events = [
+      event | Enum.reject(socket.assigns.tool_events, &({&1.tool_call_id, &1.status} == key))
+    ]
+
+    assign(socket, :tool_events, Enum.take(events, 20))
+  end
+
   defp cancellable?(%Run{id: nil}), do: false
   defp cancellable?(%Run{} = run), do: !Run.terminal?(run)
 
@@ -473,6 +633,40 @@ defmodule MrEricWeb.AgentLive do
 
   defp status_label(status) when is_atom(status), do: Atom.to_string(status)
   defp status_label(status), do: to_string(status)
+
+  defp tool_activity_visible?(approvals, events), do: map_size(approvals) > 0 or events != []
+
+  defp pending_tool_approvals(approvals) do
+    approvals
+    |> Map.values()
+    |> Enum.sort_by(&to_string(&1.tool_call_id))
+  end
+
+  defp tool_name(tool) when is_atom(tool), do: Atom.to_string(tool)
+  defp tool_name(tool) when is_binary(tool), do: tool
+  defp tool_name(_tool), do: "tool"
+
+  defp tool_event_body(%{status: :completed, result: result}), do: format_tool_payload(result)
+  defp tool_event_body(%{status: :failed, error: error}), do: to_string(error)
+
+  defp tool_event_body(%{status: status} = event) when status in [:approved, :denied] do
+    format_tool_payload(Map.take(event, [:approved, :reason]))
+  end
+
+  defp tool_event_body(%{args: args}), do: format_tool_payload(args)
+  defp tool_event_body(_event), do: ""
+
+  defp format_tool_payload(payload) when payload in [%{}, nil], do: ""
+
+  defp format_tool_payload(payload) do
+    inspect(payload, pretty: true, limit: 20, printable_limit: 1_000)
+  end
+
+  defp dom_id(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+  end
 
   defp status_badge_class(status) do
     [

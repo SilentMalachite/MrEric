@@ -106,6 +106,144 @@ defmodule MrEric.RunsTest do
     assert {:ok, %Run{status: :cancelled}} = Runs.get_run(run_id)
   end
 
+  test "RunWorker requests approval before executing a shell tool" do
+    run = Run.new("Manual tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call, %{tool: :shell_command, tool_call_id: "call-1", args: %{command: "pwd"}}}
+    )
+
+    assert_receive {:tool_approval_requested,
+                    %{
+                      run_id: run_id,
+                      tool: :shell_command,
+                      tool_call_id: "call-1",
+                      approval_id: approval_id,
+                      args: %{command: "pwd"}
+                    }}
+
+    assert run_id == run.id
+    refute_receive {:tool_completed, %{tool_call_id: "call-1"}}, 50
+
+    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: true}}
+    assert_receive {:tool_started, %{tool_call_id: "call-1", tool: :shell_command}}
+    assert_receive {:tool_completed, %{tool_call_id: "call-1", result: %{exit_status: 0}}}
+  end
+
+  test "RunWorker broadcasts denied tool approvals without execution" do
+    run = Run.new("Manual denied tool", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call, %{tool: :shell_command, tool_call_id: "call-denied", args: %{command: "pwd"}}}
+    )
+
+    assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
+
+    assert :ok = RunWorker.deny_tool(pid, approval_id)
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
+    assert_receive {:tool_failed, %{tool_call_id: "call-denied", error: "Tool request denied."}}
+    refute_receive {:tool_started, %{tool_call_id: "call-denied"}}, 50
+  end
+
+  test "tool events redact API keys before broadcasting" do
+    run_id = unique_run_id()
+    assert :ok = Runs.subscribe(run_id)
+
+    assert :ok =
+             Runs.broadcast(
+               run_id,
+               {:tool_completed,
+                %{
+                  tool: :shell_command,
+                  tool_call_id: "secret-call",
+                  result: %{output: "OPENAI_API_KEY=sk-secret123"}
+                }}
+             )
+
+    assert_receive {:tool_completed, %{result: %{output: output}}}
+    refute output =~ "sk-secret123"
+    assert output =~ "[REDACTED]"
+  end
+
+  test "tool events redact secret values based on payload keys" do
+    run_id = unique_run_id()
+    assert :ok = Runs.subscribe(run_id)
+
+    assert :ok =
+             Runs.broadcast(
+               run_id,
+               {:tool_completed,
+                %{
+                  tool: :shell_command,
+                  tool_call_id: "secret-key-call",
+                  result: %{
+                    authorization: "Bearer raw-token",
+                    cookie: "session=raw-cookie",
+                    nested: %{api_key: "raw-api-key"}
+                  }
+                }}
+             )
+
+    assert_receive {:tool_completed, %{result: result}}
+    assert result.authorization == "[REDACTED]"
+    assert result.cookie == "[REDACTED]"
+    assert result.nested.api_key == "[REDACTED]"
+  end
+
+  test "RunWorker clears pending tool approvals after terminal events" do
+    run = Run.new("Terminal tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call,
+       %{tool: :shell_command, tool_call_id: "call-terminal", args: %{command: "pwd"}}}
+    )
+
+    assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
+
+    send(pid, {:run_completed, %{final: "done"}})
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
+    assert_receive {:run_completed, %{final: "done"}}
+
+    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id)
+    refute_receive {:tool_started, %{tool_call_id: "call-terminal"}}, 50
+  end
+
+  test "RunWorker resolves pending tool approvals when cancelled" do
+    run = Run.new("Cancelled tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call,
+       %{tool: :shell_command, tool_call_id: "call-cancelled", args: %{command: "pwd"}}}
+    )
+
+    assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
+
+    assert :ok = RunWorker.cancel(pid)
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
+    assert_receive {:run_cancelled, %{run_id: run_id}}
+    assert run_id == run.id
+
+    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id)
+    refute_receive {:tool_started, %{tool_call_id: "call-cancelled"}}, 50
+  end
+
   defp unique_run_id do
     "run-test-#{System.unique_integer([:positive])}"
   end

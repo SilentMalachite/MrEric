@@ -38,6 +38,10 @@ defmodule MrEric.Runs do
 
   def cancel_run(run_id), do: RunWorker.cancel(run_id)
 
+  def approve_tool(run_id, approval_id), do: RunWorker.approve_tool(run_id, approval_id)
+
+  def deny_tool(run_id, approval_id), do: RunWorker.deny_tool(run_id, approval_id)
+
   def get_run(run_id), do: RunWorker.get_run(run_id)
 
   def subscribe(run_id), do: Events.subscribe(run_id)

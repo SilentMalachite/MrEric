@@ -147,6 +147,42 @@ defmodule MrEricWeb.AgentLiveTest do
     assert has_element?(view, "#task-form")
   end
 
+  test "renders approval UI for pending tool calls and approves them", %{conn: conn} do
+    workspace =
+      Path.join(System.tmp_dir!(), "mr-eric-live-tools-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(workspace)
+
+    previous_run_opts = Application.get_env(:mr_eric, :live_run_opts, [])
+
+    Application.put_env(:mr_eric, :live_run_opts,
+      orchestrator_module: MrEric.ToolRequestOrchestrator,
+      workspace_root: workspace
+    )
+
+    on_exit(fn ->
+      Application.put_env(:mr_eric, :live_run_opts, previous_run_opts)
+      File.rm_rf!(workspace)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("#task-form", %{"task" => "Needs shell"})
+    |> render_submit()
+
+    assert_eventually(fn -> has_element?(view, "#tool-approval-call-live") end)
+    assert render(view) =~ "pwd"
+
+    view
+    |> element("#approve-tool-call-live")
+    |> render_click()
+
+    assert_eventually(fn ->
+      has_element?(view, "#tool-event-call-live-completed") and render(view) =~ "exit_status: 0"
+    end)
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
