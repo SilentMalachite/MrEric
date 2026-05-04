@@ -65,6 +65,8 @@ defmodule MrEric.Runs.Events do
   def public_error(:tool_denied), do: "Tool request denied."
   def public_error(:tool_rejected), do: "Tool request rejected."
   def public_error(:unknown_tool), do: "Tool request denied."
+  def public_error(:mcp_unavailable), do: "MCP is unavailable or disabled."
+  def public_error(:rag_failed), do: "Project context lookup failed."
 
   def public_error(%{reason: reason}), do: public_error(reason)
 

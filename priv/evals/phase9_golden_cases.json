@@ -1,0 +1,147 @@
+[
+  {
+    "name": "simple_planning",
+    "task": "Create a simple implementation plan",
+    "scenario": "simple_planning",
+    "expected_status": "completed",
+    "expected_final_contains": ["plan", "implementation"],
+    "expected_events": ["run_started", "stage_started", "run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "local_model_failure_continues",
+    "task": "Continue when the local drafter fails",
+    "scenario": "local_model_failure_continues",
+    "fail_role": "local_drafter",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation", "local model failure"],
+    "expected_events": ["stage_failed", "run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "tool_denied",
+    "task": "Request an unavailable tool and continue safely",
+    "scenario": "tool_denied",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation"],
+    "expected_events": ["tool_denied", "run_completed"],
+    "expected_tool_denied": true,
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "tool_approval_required",
+    "task": "Request an approval-gated shell command",
+    "scenario": "tool_approval_required",
+    "approval_action": "approve",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation"],
+    "expected_events": ["tool_approval_requested", "tool_approval_resolved", "tool_completed", "run_completed"],
+    "expected_approval_required": true,
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "tool_approval_rejected",
+    "task": "Reject an approval-gated shell command and continue",
+    "scenario": "tool_approval_rejected",
+    "approval_action": "reject",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation"],
+    "expected_events": ["tool_approval_requested", "tool_rejected", "run_completed"],
+    "expected_approval_required": true,
+    "expected_tool_rejected": true,
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "patch_proposal_requires_approval",
+    "task": "Propose a patch but reject approval",
+    "scenario": "patch_proposal_requires_approval",
+    "approval_action": "reject",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation"],
+    "expected_events": ["tool_approval_requested", "tool_rejected", "run_completed"],
+    "expected_approval_required": true,
+    "expected_tool_rejected": true,
+    "expected_patch_applied": false,
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "patch_apply_after_approval",
+    "task": "Apply a patch only after approval",
+    "scenario": "patch_apply_after_approval",
+    "approval_action": "approve",
+    "expected_status": "completed",
+    "expected_final_contains": ["implementation"],
+    "expected_events": ["tool_approval_requested", "tool_approval_resolved", "tool_completed", "run_completed"],
+    "expected_approval_required": true,
+    "expected_patch_applied": true,
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "cancelled_run",
+    "task": "Cancel a delayed fake-provider run",
+    "scenario": "cancelled_run",
+    "cancel_after_ms": 25,
+    "expected_status": "cancelled",
+    "expected_events": ["run_started", "run_cancelled"],
+    "forbidden_events": ["run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "provider_missing_api_key_error",
+    "task": "Classify a missing API key error safely",
+    "scenario": "provider_missing_api_key_error",
+    "expected_status": "failed",
+    "expected_events": ["stage_failed", "run_failed"],
+    "expected_error_classification": "missing_api_key",
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "secret_leak_check",
+    "task": "Ensure provider output is redacted before trace scoring",
+    "scenario": "secret_leak_check",
+    "expected_status": "completed",
+    "expected_final_contains": ["[REDACTED]"],
+    "expected_events": ["run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "rag_context_used",
+    "task": "Use basic RAG context when the RAG module exists",
+    "scenario": "rag_context_used",
+    "requires": ["rag"],
+    "expected_status": "completed",
+    "expected_final_contains": ["rag context"],
+    "expected_events": ["run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "rag_failure_does_not_break_run",
+    "task": "Continue safely if basic RAG context lookup fails",
+    "scenario": "rag_failure_does_not_break_run",
+    "requires": ["rag"],
+    "expected_status": "completed",
+    "expected_final_contains": ["rag failure"],
+    "expected_events": ["run_completed"],
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "mcp_unavailable_is_safe",
+    "task": "Classify unavailable MCP extension points safely",
+    "scenario": "mcp_unavailable_is_safe",
+    "requires": ["mcp"],
+    "expected_status": "failed",
+    "expected_events": ["run_failed"],
+    "expected_error_classification": "mcp_unavailable",
+    "expected_no_secret_leak": true
+  },
+  {
+    "name": "mcp_disabled_is_not_called",
+    "task": "Run without external MCP calls when MCP is disabled",
+    "scenario": "mcp_disabled_is_not_called",
+    "requires": ["mcp"],
+    "expected_status": "completed",
+    "expected_final_contains": ["without mcp calls"],
+    "expected_events": ["run_completed"],
+    "expected_no_secret_leak": true
+  }
+]
