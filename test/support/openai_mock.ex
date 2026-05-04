@@ -13,6 +13,9 @@ defmodule MrEric.OpenAIMock do
 
         content =
           cond do
+            String.contains?(prompt, "report provider") ->
+              "provider:#{provider_from_conn(conn)} model:#{model}"
+
             String.contains?(prompt, "report model") ->
               "model:#{model}"
 
@@ -69,6 +72,12 @@ defmodule MrEric.OpenAIMock do
         Plug.Conn.send_resp(conn, 404, "Not Found")
     end
   end
+
+  defp provider_from_conn(%Plug.Conn{host: "api.x.ai"}), do: "grok"
+  defp provider_from_conn(%Plug.Conn{host: "openrouter.ai"}), do: "openrouter"
+  defp provider_from_conn(%Plug.Conn{host: "localhost", port: 11_434}), do: "ollama"
+  defp provider_from_conn(%Plug.Conn{host: "localhost", port: 1234}), do: "lmstudio"
+  defp provider_from_conn(_conn), do: "openai"
 
   defp send_sse_response(conn, content) do
     # Minimal SSE simulation

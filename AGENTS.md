@@ -63,6 +63,56 @@ MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o"
 MrEric.OpenAIClient.list_models(:openai, [])
 ```
 
+## Phase 4 Runs / realtime orchestration
+
+- `MrEric.Runs.start_run/2` starts one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor` for each user task. Use this path for LiveView realtime execution instead of starting ad-hoc Tasks from the UI.
+- `RunWorker` owns the current Run state, calls `MrEric.Orchestrator.stream(task, self(), opts)` in a separate task, updates stage state from received events, broadcasts sanitized events through PubSub, records completed runs into `MrEric.Agent`, and ignores late chunks after cancellation.
+- Run state is intentionally in-memory GenServer state for Phase 4 because this app currently has no Ecto repo configured. Do not add database persistence unless the surrounding data layer changes.
+- PubSub topics must be named exactly `"runs:#{run_id}"`.
+- Orchestrator stream events must use these shapes:
+  - `{:run_started, %{run_id: run_id, task: task}}`
+  - `{:stage_started, %{run_id: run_id, role: role}}`
+  - `{:stage_chunk, %{run_id: run_id, role: role, chunk: text}}`
+  - `{:stage_completed, %{run_id: run_id, role: role, content: content}}`
+  - `{:stage_failed, %{run_id: run_id, role: role, error: message}}`
+  - `{:run_completed, %{run_id: run_id, final: final}}`
+  - `{:run_failed, %{run_id: run_id, error: message}}`
+  - `{:run_cancelled, %{run_id: run_id}}`
+- Valid UI roles are `:planner`, `:local_drafter`, `:cloud_drafter`, `:critic`, `:reviewer`, and `:synthesizer`. Keep role-specific UI panels stable and addressable by DOM IDs.
+- LiveView should subscribe to only the current Run topic and process all run events in `handle_info/2`. Unsubscribe when switching runs or terminating the LiveView.
+- Never expose API keys, Authorization headers, cookies, or raw provider secrets in PubSub events, assigns, logs intended for users, templates, or browser-side JavaScript.
+- Do not implement ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, or scraping. Use only the configured OpenAI-compatible API providers.
+
+## Phase 5A Tools / approval flow
+
+- Tool implementations live under `MrEric.Tools` and must implement `MrEric.Tools.Tool`.
+- Built-in tools are registered through `MrEric.Tools.Registry`: `:file_read`, `:file_write_proposal`, `:shell_command`, `:git_status`, and `:git_diff`.
+- All tool execution must go through `MrEric.Tools.Executor`, which calls `MrEric.Tools.Policy` before running a tool.
+- File paths must resolve inside the configured workspace. Reject traversal, absolute paths outside the workspace, protected secret paths, and symlinks that can escape the workspace.
+- Protect likely secret files, including `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
+- `:shell_command` must always require approval. Do not bypass the approval request for shell execution.
+- Reject dangerous or mutating shell commands. `:shell_command` should stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, and unlisted commands.
+- Do not implement real file writes in Phase 5A. `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
+- Do not implement `git commit`, `git push`, `git reset`, `git clean`, or a full Orchestrator tool loop in Phase 5A.
+- Tool PubSub events use the current run topic `"runs:#{run_id}"`:
+  - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
+  - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, reason: reason}}`
+  - `{:tool_approval_resolved, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, approved: boolean}}`
+  - `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
+  - `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
+- Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
+
+## Phase 5B RAG / MCP extension
+
+- RAG implementations live under `MrEric.RAG`: `Chunker`, `Index`, `Retriever`, and the public `MrEric.RAG.context_for/2`.
+- RAG must only index safe text files inside the configured workspace. Reuse `MrEric.Tools.Policy` path resolution so traversal, workspace-external absolute paths, protected secret paths, and escaping symlinks stay blocked.
+- RAG is in-memory and lexical for Phase 5B. Do not add a vector DB or make embeddings mandatory unless the data layer and product scope change.
+- `MrEric.Orchestrator` may pass RAG context to the planner prompt, but RAG failures must not fail the whole run.
+- MCP extension points live under `MrEric.MCP`: `ClientBehaviour` and `ToolAdapter`.
+- Phase 5B defines the MCP interface only. Do not add real external MCP server connections without keeping tool execution behind `MrEric.Tools.Executor`, `MrEric.Tools.Policy`, and approval events.
+- `RunWorker` may send internal `{:tool_result, ...}` replies to a trusted `reply_to` pid from a tool call payload. Never broadcast `reply_to` or other process internals through PubSub.
+- Continue to forbid unapproved file edits and unapproved git operations.
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

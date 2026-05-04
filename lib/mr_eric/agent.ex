@@ -28,6 +28,11 @@ defmodule MrEric.Agent do
     GenServer.call(server, :history)
   end
 
+  def record(entry, opts \\ []) when is_map(entry) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:record, entry})
+  end
+
   @impl true
   def init(state), do: {:ok, state}
 
@@ -37,11 +42,19 @@ defmodule MrEric.Agent do
   end
 
   @impl true
+  def handle_call({:record, entry}, _from, state) do
+    history = [entry | state.history]
+    {:reply, {:ok, entry}, %{state | history: history}}
+  end
+
+  @impl true
   def handle_call({:execute, task, opts}, _from, state) do
     with {:ok, result} <- Orchestrator.run(task, opts) do
       entry = %{
         id: System.unique_integer([:positive]),
         task: task,
+        provider: Keyword.get(opts, :provider),
+        model: Keyword.get(opts, :model),
         plan: result.plan,
         code: result.final,
         final: result.final,

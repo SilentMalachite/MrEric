@@ -5,12 +5,20 @@ defmodule MrEric.LLM.FakeProvider do
 
   @impl true
   def chat_completion(prompt, opts \\ []) do
+    if delay = Keyword.get(opts, :delay_ms) do
+      Process.sleep(delay)
+    end
+
     name = Keyword.get(opts, :agent_name, "agent")
     model = Keyword.get(opts, :model, "model")
+    provider = Keyword.get(opts, :provider, "provider")
 
     cond do
       Keyword.get(opts, :fail, false) ->
         {:error, {:fake_failure, name}}
+
+      String.contains?(prompt, "report provider") ->
+        {:ok, "provider:#{provider} model:#{model}"}
 
       String.contains?(prompt, "Create a concise implementation plan") ->
         {:ok, "plan from #{model}"}
