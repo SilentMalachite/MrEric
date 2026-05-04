@@ -44,8 +44,9 @@ defmodule MrEric.LLM.Router do
       |> Keyword.merge(agent_opts(agent))
 
     case safe_completion(provider_module, prompt, llm_opts) do
-      {:ok, content} ->
-        {:ok, %{agent: agent, content: content || ""}}
+      {:ok, response} ->
+        completion = normalize_completion(response)
+        {:ok, completion |> Map.put(:agent, agent)}
 
       {:error, reason} ->
         {:error, %{agent: agent, reason: reason}}
@@ -59,6 +60,28 @@ defmodule MrEric.LLM.Router do
   catch
     kind, reason -> {:error, {kind, reason}}
   end
+
+  defp normalize_completion(%{} = response) do
+    response =
+      if Map.has_key?(response, "choices") or Map.has_key?(response, :choices) do
+        OpenAICompat.parse_chat_message(response)
+      else
+        response
+      end
+
+    %{
+      content: normalize_content(Map.get(response, :content) || Map.get(response, "content")),
+      tool_calls: Map.get(response, :tool_calls) || Map.get(response, "tool_calls") || []
+    }
+  end
+
+  defp normalize_completion(content) do
+    %{content: normalize_content(content), tool_calls: []}
+  end
+
+  defp normalize_content(nil), do: ""
+  defp normalize_content(content) when is_binary(content), do: content
+  defp normalize_content(content), do: inspect(content)
 
   defp agent_opts(agent) do
     agent

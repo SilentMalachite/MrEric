@@ -16,7 +16,9 @@ defmodule MrEric.Runs.Events do
     :tool_approval_requested,
     :tool_approval_resolved,
     :tool_completed,
-    :tool_failed
+    :tool_failed,
+    :tool_denied,
+    :tool_rejected
   ]
 
   def names, do: @event_names
@@ -61,6 +63,8 @@ defmodule MrEric.Runs.Events do
     do: "The selected model timed out. Try again or choose a faster model."
 
   def public_error(:tool_denied), do: "Tool request denied."
+  def public_error(:tool_rejected), do: "Tool request rejected."
+  def public_error(:unknown_tool), do: "Tool request denied."
 
   def public_error(%{reason: reason}), do: public_error(reason)
 
@@ -91,7 +95,7 @@ defmodule MrEric.Runs.Events do
   defp normalize_payload(payload), do: %{value: payload}
 
   defp sanitize_payload(payload, event)
-       when event in [:stage_failed, :run_failed, :tool_failed] do
+       when event in [:stage_failed, :run_failed, :tool_failed, :tool_denied, :tool_rejected] do
     error = Map.get(payload, :error) || Map.get(payload, :reason) || Map.get(payload, :value)
     Map.put(payload, :error, public_error(error))
   end
@@ -127,6 +131,8 @@ defmodule MrEric.Runs.Events do
   defp redact_secrets(text) do
     text
     |> String.replace(~r/sk-[A-Za-z0-9_\-]+/, "[REDACTED]")
+    |> String.replace(~r/(?i)authorization\s*[:=]\s*(bearer\s+)?\S+/, "authorization=[REDACTED]")
+    |> String.replace(~r/(?i)bearer\s+\S+/, "bearer [REDACTED]")
     |> String.replace(
       ~r/(?i)(api[_-]?key|authorization|bearer|cookie|token|secret)\s*[:=]\s*["']?\S+/,
       "\\1=[REDACTED]"

@@ -13,7 +13,16 @@ defmodule MrEric.Runs.RunWorker do
 
   @registry MrEric.Runs.Registry
   @run_events Events.names()
-  @public_tool_keys [:approval_id, :tool_call_id, :tool, :args, :reason, :requested_at]
+  @public_tool_keys [
+    :approval_id,
+    :tool_call_id,
+    :tool,
+    :args,
+    :role,
+    :reason,
+    :risk_level,
+    :requested_at
+  ]
 
   def start_link(opts) do
     run = Keyword.fetch!(opts, :run)
@@ -170,13 +179,12 @@ defmodule MrEric.Runs.RunWorker do
           {:reply, {:error, :not_found}, state}
 
         {request, pending} ->
-          Events.broadcast(
-            state.run.id,
-            {:tool_approval_resolved, public_tool_payload(request, %{approved: true})}
-          )
+          state =
+            state
+            |> Map.put(:pending_tool_approvals, pending)
+            |> broadcast_tool_approval_resolved(request, true, "Tool request approved.")
 
-          {:reply, :ok, %{state | pending_tool_approvals: pending},
-           {:continue, {:execute_approved_tool, request}}}
+          {:reply, :ok, state, {:continue, {:execute_approved_tool, request}}}
       end
     end
   end
@@ -188,11 +196,13 @@ defmodule MrEric.Runs.RunWorker do
         {:reply, {:error, :not_found}, state}
 
       {request, pending} ->
-        broadcast_tool_approval_resolved(state.run.id, request, false, "Tool request denied.")
+        state =
+          state
+          |> Map.put(:pending_tool_approvals, pending)
+          |> broadcast_tool_approval_resolved(request, false, "Tool request denied.")
+          |> broadcast_tool_rejected(request, :tool_denied)
 
-        state = broadcast_tool_failed(state, request, :tool_denied)
-
-        {:reply, :ok, %{state | pending_tool_approvals: pending}}
+        {:reply, :ok, state}
     end
   end
 
@@ -222,16 +232,12 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_info({:tool_call, payload}, state) do
-    cond do
-      state.cancelled? ->
-        {:noreply, state}
+    handle_tool_request(payload, state)
+  end
 
-      Run.terminal?(state.run) ->
-        {:noreply, state}
-
-      true ->
-        {:noreply, prepare_tool_call(payload, state)}
-    end
+  @impl true
+  def handle_info({:tool_requested, payload}, state) do
+    handle_tool_request(payload, state)
   end
 
   @impl true
@@ -277,6 +283,19 @@ defmodule MrEric.Runs.RunWorker do
     {:noreply, state}
   end
 
+  defp handle_tool_request(payload, state) do
+    cond do
+      state.cancelled? ->
+        {:noreply, state}
+
+      Run.terminal?(state.run) ->
+        {:noreply, state}
+
+      true ->
+        {:noreply, prepare_tool_call(payload, state)}
+    end
+  end
+
   defp start_link_with_name(nil, _run, opts), do: GenServer.start_link(__MODULE__, opts)
   defp start_link_with_name(false, _run, opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -300,12 +319,7 @@ defmodule MrEric.Runs.RunWorker do
   defp maybe_resolve_pending_tool_approvals(state, event)
        when event in [:run_completed, :run_failed, :run_cancelled] do
     Enum.each(state.pending_tool_approvals, fn {_approval_id, request} ->
-      broadcast_tool_approval_resolved(
-        state.run.id,
-        request,
-        false,
-        "Run finished before approval."
-      )
+      broadcast_tool_approval_resolved(state, request, false, "Run finished before approval.")
     end)
 
     %{state | pending_tool_approvals: %{}}
@@ -313,18 +327,30 @@ defmodule MrEric.Runs.RunWorker do
 
   defp maybe_resolve_pending_tool_approvals(state, _event), do: state
 
-  defp broadcast_tool_approval_resolved(run_id, request, approved, reason) do
-    Events.broadcast(
-      run_id,
-      {:tool_approval_resolved,
-       public_tool_payload(request, %{approved: approved, reason: reason})}
+  defp broadcast_tool_approval_resolved(state, request, approved, reason) do
+    broadcast_and_apply(
+      state,
+      :tool_approval_resolved,
+      public_tool_payload(request, %{
+        approved: approved,
+        reason: reason,
+        pending_approvals_count: map_size(state.pending_tool_approvals)
+      })
     )
   end
 
   defp prepare_tool_call(payload, state) when is_map(payload) do
-    tool = Map.get(payload, :tool) || Map.get(payload, "tool")
-    args = Map.get(payload, :args) || Map.get(payload, "args") || %{}
+    tool =
+      Map.get(payload, :tool_name) || Map.get(payload, "tool_name") ||
+        Map.get(payload, :tool) || Map.get(payload, "tool")
+
+    args =
+      Map.get(payload, :input) || Map.get(payload, "input") ||
+        Map.get(payload, :args) || Map.get(payload, "args") || %{}
+
     reply_to = reply_to(payload)
+    role = Map.get(payload, :role) || Map.get(payload, "role")
+    reason = Map.get(payload, :reason) || Map.get(payload, "reason")
 
     tool_call_id =
       Map.get(payload, :tool_call_id) || Map.get(payload, "tool_call_id") || new_id("tool-call")
@@ -332,22 +358,37 @@ defmodule MrEric.Runs.RunWorker do
     approval_id = Map.get(payload, :approval_id) || Map.get(payload, "approval_id")
     opts = tool_opts(state, tool_call_id, approval_id)
 
-    case Executor.execute(tool, args, opts) do
+    case Executor.request_tool(tool, args, reason, opts) do
       {:ok, result} ->
-        request = %{tool: tool, args: args, tool_call_id: tool_call_id} |> put_reply_to(reply_to)
+        request =
+          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
+          |> put_risk_level()
+          |> put_reply_to(reply_to)
 
         state
         |> broadcast_tool_started(request)
         |> broadcast_tool_completed(request, result)
 
       {:approval_required, request} ->
-        request = put_reply_to(request, reply_to)
-        Events.broadcast(state.run.id, {:tool_approval_requested, public_tool_payload(request)})
+        request =
+          request
+          |> Map.put(:role, role)
+          |> put_risk_level()
+          |> put_reply_to(reply_to)
+
+        state =
+          state
+          |> broadcast_and_apply(:tool_approval_requested, public_tool_payload(request))
+
         put_in(state.pending_tool_approvals[request.approval_id], request)
 
       {:error, reason} ->
-        request = %{tool: tool, args: args, tool_call_id: tool_call_id} |> put_reply_to(reply_to)
-        broadcast_tool_failed(state, request, reason)
+        request =
+          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
+          |> put_risk_level()
+          |> put_reply_to(reply_to)
+
+        broadcast_tool_denied(state, request, reason)
     end
   end
 
@@ -367,20 +408,16 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   defp broadcast_tool_started(state, request) do
-    Events.broadcast(
-      state.run.id,
-      {:tool_started, Map.take(request, [:tool, :args, :tool_call_id])}
-    )
-
-    state
+    broadcast_and_apply(state, :tool_started, tool_event_payload(request))
   end
 
   defp broadcast_tool_completed(state, request, result) do
-    Events.broadcast(
-      state.run.id,
-      {:tool_completed,
-       Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{result: result})}
-    )
+    state =
+      broadcast_and_apply(
+        state,
+        :tool_completed,
+        Map.merge(tool_event_payload(request), %{result: result})
+      )
 
     reply_tool_result(request, :completed, %{result: result})
 
@@ -388,15 +425,53 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   defp broadcast_tool_failed(state, request, reason) do
-    Events.broadcast(
-      state.run.id,
-      {:tool_failed,
-       Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{error: reason})}
-    )
+    state =
+      broadcast_and_apply(
+        state,
+        :tool_failed,
+        Map.merge(tool_event_payload(request), %{error: reason})
+      )
 
     reply_tool_result(request, :failed, %{error: reason})
 
     state
+  end
+
+  defp broadcast_tool_denied(state, request, reason) do
+    state =
+      broadcast_and_apply(
+        state,
+        :tool_denied,
+        Map.merge(tool_event_payload(request), %{error: reason})
+      )
+
+    reply_tool_result(request, :denied, %{error: reason})
+
+    state
+  end
+
+  defp broadcast_tool_rejected(state, request, reason) do
+    state =
+      broadcast_and_apply(
+        state,
+        :tool_rejected,
+        Map.merge(tool_event_payload(request), %{error: reason})
+      )
+
+    reply_tool_result(request, :rejected, %{error: reason})
+
+    state
+  end
+
+  defp broadcast_and_apply(state, event, payload) do
+    {event, payload} = Events.normalize_event(state.run.id, {event, payload})
+    run = Run.apply_event(state.run, {event, payload})
+    Events.broadcast(run.id, {event, payload})
+    %{state | run: run}
+  end
+
+  defp tool_event_payload(request) do
+    Map.take(request, [:tool, :args, :tool_call_id, :role, :risk_level])
   end
 
   defp public_tool_payload(request, extra \\ %{}) do
@@ -414,6 +489,18 @@ defmodule MrEric.Runs.RunWorker do
 
   defp put_reply_to(request, nil), do: request
   defp put_reply_to(request, reply_to), do: Map.put(request, :reply_to, reply_to)
+
+  defp put_risk_level(request) do
+    Map.put(request, :risk_level, risk_level_for(Map.get(request, :tool)))
+  end
+
+  defp risk_level_for(tool) when tool in [:shell_command, "shell_command"], do: :high
+
+  defp risk_level_for(tool)
+       when tool in [:file_write_proposal, "file_write_proposal", :git_diff, "git_diff"],
+       do: :medium
+
+  defp risk_level_for(_tool), do: :low
 
   defp reply_tool_result(request, status, fields) do
     case Map.get(request, :reply_to) do

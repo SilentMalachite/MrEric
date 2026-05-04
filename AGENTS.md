@@ -96,10 +96,12 @@ MrEric.OpenAIClient.list_models(:openai, [])
 - Do not implement `git commit`, `git push`, `git reset`, `git clean`, or a full Orchestrator tool loop in Phase 5A.
 - Tool PubSub events use the current run topic `"runs:#{run_id}"`:
   - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
-  - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, reason: reason}}`
+  - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, role: role, reason: reason, risk_level: risk_level}}`
   - `{:tool_approval_resolved, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, approved: boolean}}`
   - `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
   - `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
+  - `{:tool_denied, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
+  - `{:tool_rejected, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
 - Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
 
 ## Phase 5B RAG / MCP extension
@@ -112,6 +114,20 @@ MrEric.OpenAIClient.list_models(:openai, [])
 - Phase 5B defines the MCP interface only. Do not add real external MCP server connections without keeping tool execution behind `MrEric.Tools.Executor`, `MrEric.Tools.Policy`, and approval events.
 - `RunWorker` may send internal `{:tool_result, ...}` replies to a trusted `reply_to` pid from a tool call payload. Never broadcast `reply_to` or other process internals through PubSub.
 - Continue to forbid unapproved file edits and unapproved git operations.
+
+## Phase 5C Orchestrator tool loop
+
+- `MrEric.Orchestrator.stream/3` may let `:planner`, `:critic`, and `:reviewer` request tools. Keep draft and synthesizer stages focused on text generation unless product scope changes.
+- Tool requests must be emitted internally as `{:tool_requested, %{run_id: run_id, role: role, tool_name: tool_name, input: input, reason: reason, tool_call_id: id, reply_to: pid}}`.
+- `RunWorker` is the only broker that calls `MrEric.Tools.Executor.request_tool/4`; Orchestrator must not bypass RunWorker, Registry, Policy, or approval events.
+- `RunWorker` must set Run status to `:waiting_for_approval` while an approval request is pending, then return to running after approval resolution.
+- Approved tools execute through the signed approval request only. Rejected approvals return an internal `{:tool_result, %{status: :rejected, error: reason}}`; Policy-denied tools return `status: :denied`.
+- Orchestrator must append tool results back into the next LLM prompt before continuing the same stage. Keep tool output bounded and do not expose `reply_to` or process internals.
+- OpenAI-compatible responses may include `choices[0].message.tool_calls`; parse only `id`, `function.name`, and JSON `function.arguments`. Invalid JSON must become a safe error result, not a crash.
+- Local/non-tool-calling LLMs may request a tool only when the entire assistant message is a JSON object shaped like `%{"tool" => name, "input" => map, "reason" => text}`. Do not scrape arbitrary prose for executable JSON.
+- Enforce tool loop limits: `max_tool_calls_per_run`, `max_tool_calls_per_role`, `max_total_runtime_ms`, `max_context_chars`, and `max_tool_output_chars`. If a limit is hit, stop requesting tools and continue with current information.
+- Planner should receive bounded `MrEric.RAG.context_for/2` context before its first model call. RAG failure must not fail the run.
+- Continue to forbid ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, scraping, unapproved shell execution, unapproved file writes, destructive git commands, and force pushes.
 
 ## Project guidelines
 

@@ -6,6 +6,42 @@ defmodule MrEric.RunsTest do
   alias MrEric.Runs.Run
   alias MrEric.Runs.RunWorker
 
+  defmodule ToolLoopOrchestrator do
+    @moduledoc false
+
+    def stream(task, pid, _opts) do
+      tool =
+        if String.contains?(task, "unknown") do
+          "unknown_tool"
+        else
+          "shell_command"
+        end
+
+      send(
+        pid,
+        {:tool_requested,
+         %{
+           role: :planner,
+           tool_name: tool,
+           tool_call_id: "call-loop",
+           input: %{command: "pwd"},
+           reason: "Need current directory",
+           reply_to: self()
+         }}
+      )
+
+      receive do
+        {:tool_result, %{tool_call_id: "call-loop", status: status} = result} ->
+          send(pid, {:run_completed, %{final: "continued after #{status}", result: result}})
+          {:ok, %{final: "continued after #{status}"}}
+      after
+        1_000 ->
+          send(pid, {:run_failed, %{error: :tool_timeout}})
+          {:error, :tool_timeout}
+      end
+    end
+  end
+
   @registry %{
     planner: [%{name: "planner", provider: :ollama, model: "planner-model"}],
     drafts: [
@@ -128,6 +164,7 @@ defmodule MrEric.RunsTest do
 
     assert run_id == run.id
     refute_receive {:tool_completed, %{tool_call_id: "call-1"}}, 50
+    assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
 
     assert :ok = RunWorker.approve_tool(pid, approval_id)
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: true}}
@@ -135,7 +172,7 @@ defmodule MrEric.RunsTest do
     assert_receive {:tool_completed, %{tool_call_id: "call-1", result: %{exit_status: 0}}}
   end
 
-  test "RunWorker broadcasts denied tool approvals without execution" do
+  test "RunWorker broadcasts rejected tool approvals without execution" do
     run = Run.new("Manual denied tool", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
@@ -150,8 +187,113 @@ defmodule MrEric.RunsTest do
 
     assert :ok = RunWorker.deny_tool(pid, approval_id)
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
-    assert_receive {:tool_failed, %{tool_call_id: "call-denied", error: "Tool request denied."}}
+    assert_receive {:tool_rejected, %{tool_call_id: "call-denied", error: "Tool request denied."}}
     refute_receive {:tool_started, %{tool_call_id: "call-denied"}}, 50
+  end
+
+  test "RunWorker continues an orchestrator loop after approving a tool" do
+    run = Run.new("approval loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+
+    assert {:ok, pid} =
+             RunWorker.start_link(
+               run: run,
+               opts: [orchestrator_module: ToolLoopOrchestrator, skip_history: true],
+               name: nil
+             )
+
+    assert :ok = Runs.subscribe(run.id)
+    assert_receive {:tool_approval_requested, %{approval_id: approval_id, role: :planner}}
+    assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
+
+    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert_receive {:tool_completed, %{tool_call_id: "call-loop", result: %{exit_status: 0}}}
+    assert_receive {:run_completed, %{final: "continued after completed"}}
+
+    assert {:ok, %Run{status: :completed, final: "continued after completed"}} =
+             RunWorker.get_run(pid)
+  end
+
+  test "RunWorker stays waiting while other tool approvals remain pending" do
+    run = Run.new("Two approvals", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_requested,
+       %{
+         role: :critic,
+         tool_name: :shell_command,
+         tool_call_id: "call-one",
+         input: %{command: "pwd"},
+         reply_to: self()
+       }}
+    )
+
+    send(
+      pid,
+      {:tool_requested,
+       %{
+         role: :reviewer,
+         tool_name: :shell_command,
+         tool_call_id: "call-two",
+         input: %{command: "pwd"},
+         reply_to: self()
+       }}
+    )
+
+    assert_receive {:tool_approval_requested,
+                    %{tool_call_id: "call-one", approval_id: approval_one}}
+
+    assert_receive {:tool_approval_requested,
+                    %{tool_call_id: "call-two", approval_id: approval_two}}
+
+    assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
+
+    assert :ok = RunWorker.approve_tool(pid, approval_one)
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_one, approved: true}}
+    assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
+
+    assert :ok = RunWorker.deny_tool(pid, approval_two)
+    assert_receive {:tool_approval_resolved, %{approval_id: ^approval_two, approved: false}}
+    assert {:ok, %Run{status: :running}} = RunWorker.get_run(pid)
+  end
+
+  test "RunWorker returns a rejected result and continues after rejecting approval" do
+    run = Run.new("reject loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+
+    assert {:ok, pid} =
+             RunWorker.start_link(
+               run: run,
+               opts: [orchestrator_module: ToolLoopOrchestrator, skip_history: true],
+               name: nil
+             )
+
+    assert :ok = Runs.subscribe(run.id)
+    assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
+
+    assert :ok = RunWorker.deny_tool(pid, approval_id)
+    assert_receive {:tool_rejected, %{tool_call_id: "call-loop"}}
+    assert_receive {:run_completed, %{final: "continued after rejected"}}
+
+    assert {:ok, %Run{status: :completed, final: "continued after rejected"}} =
+             RunWorker.get_run(pid)
+  end
+
+  test "RunWorker denies unknown tools and returns the denial to the orchestrator" do
+    run = Run.new("unknown tool loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+
+    assert {:ok, _pid} =
+             RunWorker.start_link(
+               run: run,
+               opts: [orchestrator_module: ToolLoopOrchestrator, skip_history: true],
+               name: nil
+             )
+
+    assert :ok = Runs.subscribe(run.id)
+    assert_receive {:tool_denied, %{tool_call_id: "call-loop", error: "Tool request denied."}}
+    assert_receive {:run_completed, %{final: "continued after denied"}}
   end
 
   test "RunWorker sends completed tool results back to the requesting process" do

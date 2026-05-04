@@ -15,16 +15,25 @@ defmodule MrEric.LLM.OpenAICompat do
     provider = provider_from_opts(opts)
     model = Keyword.get(opts, :model, get_default_model())
 
-    body = %{
-      model: model,
-      messages: [
-        %{role: "user", content: prompt}
-      ]
-    }
+    body =
+      %{
+        model: model,
+        messages: [
+          %{role: "user", content: prompt}
+        ]
+      }
+      |> maybe_put(:tools, Keyword.get(opts, :tools))
+      |> maybe_put(:tool_choice, Keyword.get(opts, :tool_choice))
 
     with {:ok, req} <- request(provider, opts),
          {:ok, %{status: 200, body: body}} <- Req.post(req, url: "/chat/completions", json: body) do
-      {:ok, get_in(body, ["choices", Access.at(0), "message", "content"])}
+      message = parse_chat_message(body)
+
+      if Keyword.get(opts, :return_message?, Keyword.get(opts, :return_message, false)) do
+        {:ok, message}
+      else
+        {:ok, message.content}
+      end
     else
       {:ok, %{status: status, body: body}} -> {:error, %{status: status, body: body}}
       {:error, reason} -> {:error, reason}
@@ -94,6 +103,18 @@ defmodule MrEric.LLM.OpenAICompat do
     end
   end
 
+  def parse_chat_message(response) when is_map(response) do
+    message =
+      get_in(response, ["choices", Access.at(0), "message"]) ||
+        get_in(response, [:choices, Access.at(0), :message]) ||
+        %{}
+
+    %{
+      content: Map.get(message, "content") || Map.get(message, :content) || "",
+      tool_calls: Map.get(message, "tool_calls") || Map.get(message, :tool_calls) || []
+    }
+  end
+
   defp request(provider, opts) do
     req_options =
       Application.get_env(:mr_eric, :openai_req_options, [])
@@ -126,6 +147,10 @@ defmodule MrEric.LLM.OpenAICompat do
       {:ok, req}
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, []), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp provider_from_opts(opts) do
     opts

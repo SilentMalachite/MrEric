@@ -31,4 +31,30 @@ defmodule MrEric.LLM.OpenAICompatTest do
 
     assert Enum.map(models, & &1["id"]) == ["gpt-4o", "gpt-4o-mini"]
   end
+
+  test "parse_chat_message/1 preserves OpenAI-compatible tool_calls" do
+    response = %{
+      "choices" => [
+        %{
+          "message" => %{
+            "content" => nil,
+            "tool_calls" => [
+              %{
+                "id" => "call-1",
+                "function" => %{
+                  "name" => "file_read",
+                  "arguments" => ~s({"path":"README.md"})
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+
+    assert %{
+             content: "",
+             tool_calls: [%{"id" => "call-1"}]
+           } = OpenAICompat.parse_chat_message(response)
+  end
 end

@@ -269,11 +269,15 @@ defmodule MrEricWeb.AgentLive do
               <p class="text-sm font-semibold text-amber-950">
                 {tool_name(approval.tool)} requires approval
               </p>
+              <p class="mt-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                {format_tool_role(approval.role)} / risk: {format_value(approval.risk_level)}
+              </p>
               <p class="mt-1 text-xs text-amber-800">{approval.reason}</p>
             </div>
             <span class={status_badge_class(:reviewing)}>pending</span>
           </div>
 
+          <p class="mb-1 text-xs font-semibold text-amber-900">Input</p>
           <pre class="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-amber-200 bg-white p-3 text-xs text-zinc-800">{format_tool_payload(approval.args)}</pre>
 
           <div class="mt-3 flex gap-2">
@@ -546,7 +550,16 @@ defmodule MrEricWeb.AgentLive do
   defp apply_tool_event(socket, :tool_approval_requested, payload) do
     approval =
       payload
-      |> Map.take([:approval_id, :tool_call_id, :tool, :args, :reason, :requested_at])
+      |> Map.take([
+        :approval_id,
+        :tool_call_id,
+        :tool,
+        :args,
+        :role,
+        :reason,
+        :risk_level,
+        :requested_at
+      ])
       |> Map.put_new(:args, %{})
 
     assign(
@@ -573,12 +586,28 @@ defmodule MrEricWeb.AgentLive do
   defp apply_tool_event(socket, :tool_failed, payload),
     do: upsert_tool_event(socket, payload, :failed)
 
+  defp apply_tool_event(socket, :tool_denied, payload),
+    do: upsert_tool_event(socket, payload, :denied)
+
+  defp apply_tool_event(socket, :tool_rejected, payload),
+    do: upsert_tool_event(socket, payload, :rejected)
+
   defp apply_tool_event(socket, _event, _payload), do: socket
 
   defp upsert_tool_event(socket, payload, status) do
     event =
       payload
-      |> Map.take([:tool_call_id, :tool, :args, :result, :error, :approved, :reason])
+      |> Map.take([
+        :tool_call_id,
+        :tool,
+        :args,
+        :role,
+        :risk_level,
+        :result,
+        :error,
+        :approved,
+        :reason
+      ])
       |> Map.put(:status, status)
       |> Map.put_new(:args, %{})
 
@@ -646,6 +675,9 @@ defmodule MrEricWeb.AgentLive do
   defp tool_name(tool) when is_binary(tool), do: tool
   defp tool_name(_tool), do: "tool"
 
+  defp format_tool_role(nil), do: "unknown role"
+  defp format_tool_role(role), do: format_value(role)
+
   defp tool_event_body(%{status: :completed, result: result}), do: format_tool_payload(result)
   defp tool_event_body(%{status: :failed, error: error}), do: to_string(error)
 
@@ -678,8 +710,11 @@ defmodule MrEricWeb.AgentLive do
         :streaming -> "bg-blue-50 text-blue-700 ring-blue-200"
         :reviewing -> "bg-amber-50 text-amber-700 ring-amber-200"
         :synthesizing -> "bg-violet-50 text-violet-700 ring-violet-200"
+        :waiting_for_approval -> "bg-amber-50 text-amber-700 ring-amber-200"
         :waiting_for_model -> "bg-sky-50 text-sky-700 ring-sky-200"
         :running -> "bg-blue-50 text-blue-700 ring-blue-200"
+        :denied -> "bg-red-50 text-red-700 ring-red-200"
+        :rejected -> "bg-red-50 text-red-700 ring-red-200"
         _ -> "bg-zinc-50 text-zinc-600 ring-zinc-200"
       end
     ]

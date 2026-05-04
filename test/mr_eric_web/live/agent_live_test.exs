@@ -183,6 +183,33 @@ defmodule MrEricWeb.AgentLiveTest do
     end)
   end
 
+  test "redacts secrets from approval UI payloads", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    send(
+      view.pid,
+      {:tool_approval_requested,
+       %{
+         run_id: nil,
+         approval_id: "approval-secret-live",
+         tool_call_id: "secret-live",
+         tool: :shell_command,
+         role: :planner,
+         risk_level: :high,
+         reason: "Authorization: Bearer raw-token",
+         args: %{command: "pwd", api_key: "sk-live-secret"}
+       }}
+    )
+
+    assert_eventually(fn -> has_element?(view, "#tool-approval-secret-live") end)
+
+    html = render(view)
+    assert html =~ "planner / risk: high"
+    refute html =~ "sk-live-secret"
+    refute html =~ "raw-token"
+    assert html =~ "[REDACTED]"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

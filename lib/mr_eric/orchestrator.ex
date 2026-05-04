@@ -4,7 +4,19 @@ defmodule MrEric.Orchestrator do
   """
 
   alias MrEric.LLM.{Registry, Router}
+  alias MrEric.Orchestrator.ToolCallParser
   alias MrEric.RAG
+  alias MrEric.Tools.Registry, as: ToolRegistry
+
+  @default_tool_limits %{
+    max_tool_calls_per_run: 8,
+    max_tool_calls_per_role: 3,
+    max_total_runtime_ms: 180_000,
+    max_context_chars: 20_000,
+    max_tool_output_chars: 8_000
+  }
+
+  @tool_roles [:planner, :critic, :reviewer]
 
   @doc """
   Runs a task through the collaborative LLM flow.
@@ -56,24 +68,32 @@ defmodule MrEric.Orchestrator do
   def stream(task, pid, opts \\ [])
 
   def stream(task, pid, opts) when is_binary(task) and task != "" and is_pid(pid) do
-    with {:ok, planner} <- stream_planner(task, pid, opts) do
-      draft_result = stream_drafts(task, planner.content, pid, opts)
-      review_result = stream_reviews(task, planner.content, draft_result.successes, pid, opts)
+    {:ok, tool_budget} = start_tool_budget(opts)
 
-      stream_synthesizer(
-        task,
-        planner.content,
-        draft_result.successes,
-        draft_result.errors,
-        review_result.successes,
-        review_result.errors,
-        pid,
-        opts
-      )
-    else
-      {:error, reason} ->
-        send_event(pid, :run_failed, %{error: reason}, opts)
-        {:error, reason}
+    try do
+      with {:ok, planner} <- stream_planner(task, pid, opts, tool_budget) do
+        draft_result = stream_drafts(task, planner.content, pid, opts)
+
+        review_result =
+          stream_reviews(task, planner.content, draft_result.successes, pid, opts, tool_budget)
+
+        stream_synthesizer(
+          task,
+          planner.content,
+          draft_result.successes,
+          draft_result.errors,
+          review_result.successes,
+          review_result.errors,
+          pid,
+          opts
+        )
+      else
+        {:error, reason} ->
+          send_event(pid, :run_failed, %{error: reason}, opts)
+          {:error, reason}
+      end
+    after
+      stop_tool_budget(tool_budget)
     end
   end
 
@@ -173,7 +193,7 @@ defmodule MrEric.Orchestrator do
     |> then(fn {successes, errors} -> {Enum.reverse(successes), Enum.reverse(errors)} end)
   end
 
-  defp stream_planner(task, pid, opts) do
+  defp stream_planner(task, pid, opts, tool_budget) do
     rag_context = rag_context_for(task, opts)
 
     :planner
@@ -188,7 +208,14 @@ defmodule MrEric.Orchestrator do
       planner ->
         send_event(pid, :stage_started, %{role: :planner, agent: planner}, opts)
 
-        case Router.complete(planner_prompt(task, rag_context), planner, opts) do
+        case complete_with_tool_loop(
+               planner_prompt(task, rag_context),
+               :planner,
+               planner,
+               pid,
+               opts,
+               tool_budget
+             ) do
           {:ok, result} ->
             emit_stage_success(pid, :planner, result, opts)
             {:ok, result}
@@ -222,11 +249,11 @@ defmodule MrEric.Orchestrator do
     end)
   end
 
-  defp stream_reviews(_task, _plan, [], _pid, _opts) do
+  defp stream_reviews(_task, _plan, [], _pid, _opts, _tool_budget) do
     %{successes: [], errors: []}
   end
 
-  defp stream_reviews(task, plan, drafts, pid, opts) do
+  defp stream_reviews(task, plan, drafts, pid, opts, tool_budget) do
     review_jobs =
       for {role, reviewer} <- Registry.agents(:reviewer, opts) |> tag_agents([:critic, :reviewer]),
           draft <- drafts do
@@ -238,7 +265,7 @@ defmodule MrEric.Orchestrator do
 
       task
       |> review_prompt(plan, draft)
-      |> Router.complete(reviewer, opts)
+      |> complete_with_tool_loop(role, reviewer, pid, opts, tool_budget)
       |> attach_draft(draft)
       |> case do
         {:ok, result} ->
@@ -365,6 +392,351 @@ defmodule MrEric.Orchestrator do
     send(pid, {event, payload})
   end
 
+  defp complete_with_tool_loop(prompt, role, agent, pid, opts, tool_budget) do
+    if tool_loop_enabled?(role, opts) do
+      prompt
+      |> prompt_with_tool_instructions()
+      |> do_complete_with_tool_loop(role, agent, pid, opts, tool_budget, [])
+    else
+      Router.complete(prompt, agent, opts)
+    end
+  end
+
+  defp do_complete_with_tool_loop(prompt, role, agent, pid, opts, tool_budget, tool_results) do
+    llm_opts =
+      opts
+      |> Keyword.put(:return_message?, true)
+      |> maybe_put_native_tool_specs(agent)
+
+    with {:ok, result} <-
+           Router.complete(prompt_with_tool_results(prompt, tool_results, opts), agent, llm_opts) do
+      case ToolCallParser.extract(result) do
+        [] ->
+          {:ok, result}
+
+        calls ->
+          case handle_tool_calls(calls, role, pid, opts, tool_budget) do
+            {:continue, new_results} ->
+              do_complete_with_tool_loop(
+                prompt,
+                role,
+                agent,
+                pid,
+                opts,
+                tool_budget,
+                tool_results ++ new_results
+              )
+
+            {:stop, new_results, reason} ->
+              {:ok, tool_limit_result(result, tool_results ++ new_results, reason)}
+          end
+      end
+    end
+  end
+
+  defp handle_tool_calls(calls, role, pid, opts, tool_budget) do
+    Enum.reduce_while(calls, {:continue, []}, fn call, {:continue, results} ->
+      case reserve_tool_call(tool_budget, role) do
+        :ok ->
+          result = execute_or_record_tool_call(call, role, pid, opts, tool_budget)
+          {:cont, {:continue, results ++ [result]}}
+
+        {:error, reason} ->
+          {:halt, {:stop, results, reason}}
+      end
+    end)
+  end
+
+  defp execute_or_record_tool_call(%{error: error} = call, _role, _pid, opts, _tool_budget) do
+    %{
+      tool_call_id: Map.get(call, :tool_call_id),
+      tool: Map.get(call, :tool),
+      status: :failed,
+      error: error
+    }
+    |> truncate_tool_result(opts)
+  end
+
+  defp execute_or_record_tool_call(call, role, pid, opts, tool_budget) do
+    tool_call_id = Map.fetch!(call, :tool_call_id)
+    tool = Map.get(call, :tool)
+    args = Map.get(call, :args) || %{}
+
+    send(
+      pid,
+      {:tool_requested,
+       %{
+         run_id: Keyword.get(opts, :run_id),
+         role: role,
+         tool: tool,
+         tool_name: tool,
+         args: args,
+         input: args,
+         reason: Map.get(call, :reason),
+         tool_call_id: tool_call_id,
+         reply_to: self()
+       }}
+    )
+
+    receive do
+      {:tool_result, %{tool_call_id: ^tool_call_id} = result} ->
+        truncate_tool_result(result, opts)
+    after
+      remaining_runtime_ms(tool_budget) ->
+        truncate_tool_result(
+          %{
+            tool_call_id: tool_call_id,
+            tool: tool,
+            status: :failed,
+            error: :tool_result_timeout
+          },
+          opts
+        )
+    end
+  end
+
+  defp tool_loop_enabled?(role, opts) do
+    Keyword.get(opts, :tool_loop_enabled, Keyword.get(opts, :tool_loop_enabled?, true)) != false and
+      role in @tool_roles
+  end
+
+  defp maybe_put_native_tool_specs(opts, agent) do
+    if native_tool_calls_enabled?(agent, opts) do
+      opts
+      |> Keyword.put(:tools, openai_tool_specs())
+      |> Keyword.put(:tool_choice, "auto")
+    else
+      opts
+    end
+  end
+
+  defp native_tool_calls_enabled?(agent, opts) do
+    case Keyword.get(opts, :native_tool_calls?) do
+      enabled when is_boolean(enabled) ->
+        enabled
+
+      _other ->
+        provider = agent |> Map.get(:provider) |> provider_id()
+        provider in ["openai", "grok", "openrouter"]
+    end
+  end
+
+  defp provider_id(provider) when is_atom(provider),
+    do: provider |> Atom.to_string() |> provider_id()
+
+  defp provider_id(provider) when is_binary(provider), do: String.downcase(provider)
+  defp provider_id(_provider), do: ""
+
+  defp prompt_with_tool_instructions(prompt) do
+    """
+    #{prompt}
+
+    Tools:
+    You may request a tool only when it is necessary. Prefer the project context already provided.
+    Native OpenAI-compatible tool calls are supported. For local models without native tool support,
+    output exactly one JSON object and no surrounding prose:
+    {"tool":"file_read","input":{"path":"relative/path"},"reason":"why this is needed"}
+    All tool requests go through MrEric policy and approval gates before execution.
+    """
+  end
+
+  defp prompt_with_tool_results(prompt, [], _opts), do: prompt
+
+  defp prompt_with_tool_results(prompt, tool_results, opts) do
+    max_chars = max_context_chars(opts)
+
+    tool_context =
+      tool_results
+      |> Enum.map_join("\n\n", &format_tool_result/1)
+      |> limit_text(max(div(max_chars, 2), 1))
+
+    suffix = """
+
+    Tool results:
+    #{tool_context}
+
+    Continue the same stage using the tool results above. If no more tool information is needed,
+    answer normally instead of requesting another tool.
+    """
+
+    prompt_budget = max(max_chars - byte_size(suffix), 0)
+
+    """
+    #{limit_text(prompt, prompt_budget)}
+    #{suffix}
+    """
+    |> limit_text_from_end(max_chars)
+  end
+
+  defp format_tool_result(result) do
+    id = Map.get(result, :tool_call_id) || Map.get(result, "tool_call_id")
+    tool = Map.get(result, :tool) || Map.get(result, "tool")
+    status = Map.get(result, :status) || Map.get(result, "status")
+
+    body =
+      result
+      |> Map.drop([:tool_call_id, "tool_call_id", :tool, "tool", :status, "status"])
+      |> inspect(pretty: true, limit: 40, printable_limit: 8_000)
+
+    """
+    <tool_result id="#{id}" tool="#{tool}" status="#{status}">
+    #{body}
+    </tool_result>
+    """
+  end
+
+  defp truncate_tool_result(result, opts) do
+    max_chars =
+      Keyword.get(opts, :max_tool_output_chars, @default_tool_limits.max_tool_output_chars)
+
+    result
+    |> stringify_large_fields(max_chars)
+  end
+
+  defp stringify_large_fields(%{} = map, max_chars) do
+    Map.new(map, fn {key, value} -> {key, stringify_large_fields(value, max_chars)} end)
+  end
+
+  defp stringify_large_fields(list, max_chars) when is_list(list) do
+    Enum.map(list, &stringify_large_fields(&1, max_chars))
+  end
+
+  defp stringify_large_fields(value, max_chars) when is_binary(value),
+    do: limit_text(value, max_chars)
+
+  defp stringify_large_fields(value, _max_chars), do: value
+
+  defp tool_limit_result(result, tool_results, reason) do
+    content =
+      [
+        result.content,
+        "Tool loop stopped: #{reason}.",
+        if(tool_results == [],
+          do: nil,
+          else:
+            "Tool results gathered:\n#{Enum.map_join(tool_results, "\n", &format_tool_result/1)}"
+        )
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n\n")
+
+    %{result | content: content, tool_calls: []}
+  end
+
+  defp openai_tool_specs do
+    Enum.map(ToolRegistry.list(), fn tool ->
+      %{
+        type: "function",
+        function: %{
+          name: Atom.to_string(tool.name),
+          description: tool.description,
+          parameters: tool_parameters(tool.schema)
+        }
+      }
+    end)
+  end
+
+  defp tool_parameters(schema) do
+    properties =
+      Map.new(schema, fn {name, spec} ->
+        {Atom.to_string(name),
+         %{
+           type: spec |> Map.get(:type, :string) |> Atom.to_string(),
+           description: Atom.to_string(name)
+         }}
+      end)
+
+    required =
+      schema
+      |> Enum.filter(fn {_name, spec} -> Map.get(spec, :required, false) end)
+      |> Enum.map(fn {name, _spec} -> Atom.to_string(name) end)
+
+    %{type: "object", properties: properties, required: required}
+  end
+
+  defp start_tool_budget(opts) do
+    Agent.start_link(fn ->
+      %{
+        started_at: System.monotonic_time(:millisecond),
+        total_calls: 0,
+        role_calls: %{},
+        max_tool_calls_per_run:
+          Keyword.get(
+            opts,
+            :max_tool_calls_per_run,
+            @default_tool_limits.max_tool_calls_per_run
+          ),
+        max_tool_calls_per_role:
+          Keyword.get(
+            opts,
+            :max_tool_calls_per_role,
+            @default_tool_limits.max_tool_calls_per_role
+          ),
+        max_total_runtime_ms:
+          Keyword.get(
+            opts,
+            :max_total_runtime_ms,
+            @default_tool_limits.max_total_runtime_ms
+          )
+      }
+    end)
+  end
+
+  defp stop_tool_budget(pid) when is_pid(pid), do: Agent.stop(pid, :normal, 1_000)
+  defp stop_tool_budget(_pid), do: :ok
+
+  defp reserve_tool_call(budget, role) do
+    Agent.get_and_update(budget, fn state ->
+      cond do
+        runtime_exceeded?(state) ->
+          {{:error, :max_total_runtime_exceeded}, state}
+
+        state.total_calls >= state.max_tool_calls_per_run ->
+          {{:error, :max_tool_calls_per_run_exceeded}, state}
+
+        Map.get(state.role_calls, role, 0) >= state.max_tool_calls_per_role ->
+          {{:error, :max_tool_calls_per_role_exceeded}, state}
+
+        true ->
+          updated = %{
+            state
+            | total_calls: state.total_calls + 1,
+              role_calls: Map.update(state.role_calls, role, 1, &(&1 + 1))
+          }
+
+          {:ok, updated}
+      end
+    end)
+  end
+
+  defp remaining_runtime_ms(budget) do
+    Agent.get(budget, fn state ->
+      elapsed = System.monotonic_time(:millisecond) - state.started_at
+      max(state.max_total_runtime_ms - elapsed, 0)
+    end)
+  end
+
+  defp runtime_exceeded?(state) do
+    System.monotonic_time(:millisecond) - state.started_at >= state.max_total_runtime_ms
+  end
+
+  defp max_context_chars(opts),
+    do: Keyword.get(opts, :max_context_chars, @default_tool_limits.max_context_chars)
+
+  defp limit_text(text, max_chars) when is_binary(text) and byte_size(text) > max_chars do
+    binary_part(text, 0, max_chars)
+  end
+
+  defp limit_text(text, _max_chars), do: text
+
+  defp limit_text_from_end(text, max_chars)
+       when is_binary(text) and byte_size(text) > max_chars do
+    start = byte_size(text) - max_chars
+    binary_part(text, start, max_chars)
+  end
+
+  defp limit_text_from_end(text, _max_chars), do: text
+
   defp attach_draft({:ok, result}, draft), do: {:ok, Map.put(result, :draft, draft)}
   defp attach_draft({:error, error}, draft), do: {:error, Map.put(error, :draft, draft)}
 
@@ -400,7 +772,7 @@ defmodule MrEric.Orchestrator do
         ""
 
       is_binary(Keyword.get(opts, :rag_context)) ->
-        Keyword.get(opts, :rag_context) |> String.trim()
+        Keyword.get(opts, :rag_context) |> String.trim() |> limit_text(max_context_chars(opts))
 
       true ->
         do_rag_context_for(task, opts)
@@ -411,9 +783,14 @@ defmodule MrEric.Orchestrator do
     rag_module = Keyword.get(opts, :rag_module, RAG)
 
     case rag_module.context_for(task, opts) do
-      {:ok, context} when is_binary(context) -> String.trim(context)
-      context when is_binary(context) -> String.trim(context)
-      _other -> ""
+      {:ok, context} when is_binary(context) ->
+        context |> String.trim() |> limit_text(max_context_chars(opts))
+
+      context when is_binary(context) ->
+        context |> String.trim() |> limit_text(max_context_chars(opts))
+
+      _other ->
+        ""
     end
   rescue
     _error -> ""

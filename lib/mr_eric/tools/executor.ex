@@ -19,6 +19,16 @@ defmodule MrEric.Tools.Executor do
     end
   end
 
+  def request_tool(tool, args, reason, opts) do
+    case execute(tool, args, opts) do
+      {:approval_required, request} ->
+        {:approval_required, maybe_append_reason(request, reason)}
+
+      result ->
+        result
+    end
+  end
+
   def execute_approved(request, opts \\ []) when is_map(request) do
     request = Policy.normalize_args(request)
 
@@ -44,6 +54,21 @@ defmodule MrEric.Tools.Executor do
       requested_at: DateTime.utc_now()
     }
   end
+
+  defp maybe_append_reason(request, reason) when is_binary(reason) and reason != "" do
+    policy_reason = Map.get(request, :reason)
+
+    reason =
+      if is_binary(policy_reason) and policy_reason != reason do
+        policy_reason <> " Model reason: " <> reason
+      else
+        reason
+      end
+
+    Map.put(request, :reason, reason)
+  end
+
+  defp maybe_append_reason(request, _reason), do: request
 
   defp verify_approval_request(%{
          tool: tool,

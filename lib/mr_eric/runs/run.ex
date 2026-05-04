@@ -14,6 +14,7 @@ defmodule MrEric.Runs.Run do
     :queued,
     :running,
     :waiting_for_model,
+    :waiting_for_approval,
     :streaming,
     :reviewing,
     :synthesizing,
@@ -165,6 +166,29 @@ defmodule MrEric.Runs.Run do
     run
     |> Map.put(:status, :cancelled)
     |> touch()
+  end
+
+  def apply_event(%__MODULE__{} = run, :tool_approval_requested, _payload) do
+    run
+    |> Map.put(:status, :waiting_for_approval)
+    |> touch()
+  end
+
+  def apply_event(%__MODULE__{} = run, :tool_approval_resolved, payload) do
+    cond do
+      terminal?(run) ->
+        run
+
+      Map.get(payload, :pending_approvals_count, 0) > 0 ->
+        run
+        |> Map.put(:status, :waiting_for_approval)
+        |> touch()
+
+      true ->
+        run
+        |> Map.put(:status, :running)
+        |> touch()
+    end
   end
 
   def apply_event(%__MODULE__{} = run, _event, _payload), do: run
