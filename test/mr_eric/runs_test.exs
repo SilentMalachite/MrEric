@@ -154,6 +154,45 @@ defmodule MrEric.RunsTest do
     refute_receive {:tool_started, %{tool_call_id: "call-denied"}}, 50
   end
 
+  test "RunWorker sends completed tool results back to the requesting process" do
+    workspace = tmp_workspace()
+    File.write!(Path.join(workspace, "note.txt"), "hello from tool result")
+
+    run = Run.new("Manual tool reply", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+
+    assert {:ok, pid} =
+             RunWorker.start_link(
+               run: run,
+               opts: [workspace_root: workspace],
+               auto_start: false,
+               name: nil
+             )
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call,
+       %{
+         tool: :file_read,
+         tool_call_id: "call-reply",
+         args: %{path: "note.txt"},
+         reply_to: self()
+       }}
+    )
+
+    assert_receive {:tool_started, %{tool_call_id: "call-reply", tool: :file_read}}
+    assert_receive {:tool_completed, %{tool_call_id: "call-reply"}}
+
+    assert_receive {:tool_result,
+                    %{
+                      tool_call_id: "call-reply",
+                      tool: :file_read,
+                      status: :completed,
+                      result: %{content: "hello from tool result"}
+                    }}
+  end
+
   test "tool events redact API keys before broadcasting" do
     run_id = unique_run_id()
     assert :ok = Runs.subscribe(run_id)
@@ -246,5 +285,14 @@ defmodule MrEric.RunsTest do
 
   defp unique_run_id do
     "run-test-#{System.unique_integer([:positive])}"
+  end
+
+  defp tmp_workspace do
+    workspace =
+      Path.join(System.tmp_dir!(), "mr-eric-run-worker-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf!(workspace) end)
+    workspace
   end
 end

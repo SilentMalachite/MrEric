@@ -93,7 +93,7 @@ MrEric.OpenAIClient.list_models(:openai, [])
 - `:shell_command` must always require approval. Do not bypass the approval request for shell execution.
 - Reject dangerous or mutating shell commands. `:shell_command` should stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, and unlisted commands.
 - Do not implement real file writes in Phase 5A. `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
-- Do not implement `git commit`, `git push`, `git reset`, `git clean`, RAG, MCP, or a full Orchestrator tool loop in Phase 5A.
+- Do not implement `git commit`, `git push`, `git reset`, `git clean`, or a full Orchestrator tool loop in Phase 5A.
 - Tool PubSub events use the current run topic `"runs:#{run_id}"`:
   - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
   - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, reason: reason}}`
@@ -101,6 +101,17 @@ MrEric.OpenAIClient.list_models(:openai, [])
   - `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
   - `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
 - Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
+
+## Phase 5B RAG / MCP extension
+
+- RAG implementations live under `MrEric.RAG`: `Chunker`, `Index`, `Retriever`, and the public `MrEric.RAG.context_for/2`.
+- RAG must only index safe text files inside the configured workspace. Reuse `MrEric.Tools.Policy` path resolution so traversal, workspace-external absolute paths, protected secret paths, and escaping symlinks stay blocked.
+- RAG is in-memory and lexical for Phase 5B. Do not add a vector DB or make embeddings mandatory unless the data layer and product scope change.
+- `MrEric.Orchestrator` may pass RAG context to the planner prompt, but RAG failures must not fail the whole run.
+- MCP extension points live under `MrEric.MCP`: `ClientBehaviour` and `ToolAdapter`.
+- Phase 5B defines the MCP interface only. Do not add real external MCP server connections without keeping tool execution behind `MrEric.Tools.Executor`, `MrEric.Tools.Policy`, and approval events.
+- `RunWorker` may send internal `{:tool_result, ...}` replies to a trusted `reply_to` pid from a tool call payload. Never broadcast `reply_to` or other process internals through PubSub.
+- Continue to forbid unapproved file edits and unapproved git operations.
 
 ## Project guidelines
 

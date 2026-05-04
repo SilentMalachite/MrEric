@@ -5,7 +5,27 @@ defmodule MrEric.LLM.Router do
 
   alias MrEric.LLM.OpenAICompat
 
-  @internal_opts [:max_concurrency, :provider_module, :registry, :server]
+  @internal_opts [
+    :max_concurrency,
+    :chunk_overlap,
+    :chunk_size,
+    :ignore_dirs,
+    :include_extensions,
+    :max_file_bytes,
+    :paths,
+    :provider_module,
+    :rag_context,
+    :rag_enabled,
+    :rag_enabled?,
+    :rag_index,
+    :rag_max_context_chars,
+    :rag_module,
+    :rag_paths,
+    :rag_top_k,
+    :registry,
+    :server,
+    :workspace_root
+  ]
 
   @doc """
   Completes a prompt using the given agent spec.

@@ -13,6 +13,7 @@ defmodule MrEric.Runs.RunWorker do
 
   @registry MrEric.Runs.Registry
   @run_events Events.names()
+  @public_tool_keys [:approval_id, :tool_call_id, :tool, :args, :reason, :requested_at]
 
   def start_link(opts) do
     run = Keyword.fetch!(opts, :run)
@@ -171,7 +172,7 @@ defmodule MrEric.Runs.RunWorker do
         {request, pending} ->
           Events.broadcast(
             state.run.id,
-            {:tool_approval_resolved, Map.merge(request, %{approved: true})}
+            {:tool_approval_resolved, public_tool_payload(request, %{approved: true})}
           )
 
           {:reply, :ok, %{state | pending_tool_approvals: pending},
@@ -189,7 +190,7 @@ defmodule MrEric.Runs.RunWorker do
       {request, pending} ->
         broadcast_tool_approval_resolved(state.run.id, request, false, "Tool request denied.")
 
-        Events.broadcast(state.run.id, {:tool_failed, Map.merge(request, %{error: :tool_denied})})
+        state = broadcast_tool_failed(state, request, :tool_denied)
 
         {:reply, :ok, %{state | pending_tool_approvals: pending}}
     end
@@ -315,13 +316,15 @@ defmodule MrEric.Runs.RunWorker do
   defp broadcast_tool_approval_resolved(run_id, request, approved, reason) do
     Events.broadcast(
       run_id,
-      {:tool_approval_resolved, Map.merge(request, %{approved: approved, reason: reason})}
+      {:tool_approval_resolved,
+       public_tool_payload(request, %{approved: approved, reason: reason})}
     )
   end
 
   defp prepare_tool_call(payload, state) when is_map(payload) do
     tool = Map.get(payload, :tool) || Map.get(payload, "tool")
     args = Map.get(payload, :args) || Map.get(payload, "args") || %{}
+    reply_to = reply_to(payload)
 
     tool_call_id =
       Map.get(payload, :tool_call_id) || Map.get(payload, "tool_call_id") || new_id("tool-call")
@@ -331,23 +334,20 @@ defmodule MrEric.Runs.RunWorker do
 
     case Executor.execute(tool, args, opts) do
       {:ok, result} ->
-        request = %{tool: tool, args: args, tool_call_id: tool_call_id}
+        request = %{tool: tool, args: args, tool_call_id: tool_call_id} |> put_reply_to(reply_to)
 
         state
         |> broadcast_tool_started(request)
         |> broadcast_tool_completed(request, result)
 
       {:approval_required, request} ->
-        Events.broadcast(state.run.id, {:tool_approval_requested, request})
+        request = put_reply_to(request, reply_to)
+        Events.broadcast(state.run.id, {:tool_approval_requested, public_tool_payload(request)})
         put_in(state.pending_tool_approvals[request.approval_id], request)
 
       {:error, reason} ->
-        Events.broadcast(state.run.id, {
-          :tool_failed,
-          %{tool: tool, args: args, tool_call_id: tool_call_id, error: reason}
-        })
-
-        state
+        request = %{tool: tool, args: args, tool_call_id: tool_call_id} |> put_reply_to(reply_to)
+        broadcast_tool_failed(state, request, reason)
     end
   end
 
@@ -382,6 +382,8 @@ defmodule MrEric.Runs.RunWorker do
        Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{result: result})}
     )
 
+    reply_tool_result(request, :completed, %{result: result})
+
     state
   end
 
@@ -392,7 +394,42 @@ defmodule MrEric.Runs.RunWorker do
        Map.merge(Map.take(request, [:tool, :args, :tool_call_id]), %{error: reason})}
     )
 
+    reply_tool_result(request, :failed, %{error: reason})
+
     state
+  end
+
+  defp public_tool_payload(request, extra \\ %{}) do
+    request
+    |> Map.take(@public_tool_keys)
+    |> Map.merge(extra)
+  end
+
+  defp reply_to(payload) do
+    case Map.get(payload, :reply_to) || Map.get(payload, "reply_to") do
+      pid when is_pid(pid) -> pid
+      _other -> nil
+    end
+  end
+
+  defp put_reply_to(request, nil), do: request
+  defp put_reply_to(request, reply_to), do: Map.put(request, :reply_to, reply_to)
+
+  defp reply_tool_result(request, status, fields) do
+    case Map.get(request, :reply_to) do
+      pid when is_pid(pid) ->
+        send(
+          pid,
+          {:tool_result,
+           request
+           |> Map.take([:tool_call_id, :tool, :args])
+           |> Map.merge(%{status: status})
+           |> Map.merge(fields)}
+        )
+
+      _other ->
+        :ok
+    end
   end
 
   defp tool_opts(state, tool_call_id, nil) do

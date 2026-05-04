@@ -32,6 +32,9 @@ defmodule MrEric.Tools.PolicyTest do
              Policy.resolve_workspace_path(".env", workspace_root: workspace)
 
     assert {:error, :secret_file} =
+             Policy.resolve_workspace_path(".envrc", workspace_root: workspace)
+
+    assert {:error, :secret_file} =
              Policy.resolve_workspace_path("config/prod.secret.exs", workspace_root: workspace)
 
     assert {:error, :secret_file} =

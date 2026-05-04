@@ -232,7 +232,7 @@ defmodule MrEric.Tools.Policy do
     basename = Path.basename(relative)
 
     Enum.any?(segments, &(&1 in [".git", ".ssh"])) or
-      Regex.match?(~r/^\.env($|\.)/i, basename) or
+      String.starts_with?(String.downcase(basename), ".env") or
       Regex.match?(~r/^id_(rsa|dsa|ecdsa|ed25519)$/i, basename) or
       Regex.match?(~r/\.(pem|key|p12|pfx)$/i, basename) or
       Regex.match?(~r/(secret|credential|token)/i, relative)

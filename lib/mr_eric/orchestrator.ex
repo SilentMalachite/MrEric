@@ -4,6 +4,7 @@ defmodule MrEric.Orchestrator do
   """
 
   alias MrEric.LLM.{Registry, Router}
+  alias MrEric.RAG
 
   @doc """
   Runs a task through the collaborative LLM flow.
@@ -82,6 +83,8 @@ defmodule MrEric.Orchestrator do
   end
 
   defp run_planner(task, opts) do
+    rag_context = rag_context_for(task, opts)
+
     :planner
     |> Registry.agents(opts)
     |> List.first()
@@ -90,7 +93,7 @@ defmodule MrEric.Orchestrator do
         {:error, %{stage: :planner, reason: :no_agent}}
 
       planner ->
-        Router.complete(planner_prompt(task), planner, opts)
+        Router.complete(planner_prompt(task, rag_context), planner, opts)
     end
   end
 
@@ -171,6 +174,8 @@ defmodule MrEric.Orchestrator do
   end
 
   defp stream_planner(task, pid, opts) do
+    rag_context = rag_context_for(task, opts)
+
     :planner
     |> Registry.agents(opts)
     |> List.first()
@@ -183,7 +188,7 @@ defmodule MrEric.Orchestrator do
       planner ->
         send_event(pid, :stage_started, %{role: :planner, agent: planner}, opts)
 
-        case Router.complete(planner_prompt(task), planner, opts) do
+        case Router.complete(planner_prompt(task, rag_context), planner, opts) do
           {:ok, result} ->
             emit_stage_success(pid, :planner, result, opts)
             {:ok, result}
@@ -366,12 +371,54 @@ defmodule MrEric.Orchestrator do
   defp fallback_final([draft | _]), do: draft.content
   defp fallback_final([]), do: ""
 
-  defp planner_prompt(task) do
+  defp planner_prompt(task, rag_context) do
+    context_section = planner_context_section(rag_context)
+
     """
     Task: #{task}
 
+    #{context_section}
     Create a concise implementation plan for this task.
     """
+  end
+
+  defp planner_context_section(""), do: ""
+
+  defp planner_context_section(context) when is_binary(context) do
+    context = String.trim(context)
+
+    if String.starts_with?(context, "Project context") do
+      context <> "\n"
+    else
+      "Project context:\n#{context}\n"
+    end
+  end
+
+  defp rag_context_for(task, opts) do
+    cond do
+      Keyword.get(opts, :rag_enabled, Keyword.get(opts, :rag_enabled?, true)) == false ->
+        ""
+
+      is_binary(Keyword.get(opts, :rag_context)) ->
+        Keyword.get(opts, :rag_context) |> String.trim()
+
+      true ->
+        do_rag_context_for(task, opts)
+    end
+  end
+
+  defp do_rag_context_for(task, opts) do
+    rag_module = Keyword.get(opts, :rag_module, RAG)
+
+    case rag_module.context_for(task, opts) do
+      {:ok, context} when is_binary(context) -> String.trim(context)
+      context when is_binary(context) -> String.trim(context)
+      _other -> ""
+    end
+  rescue
+    _error -> ""
+  catch
+    _kind, _reason -> ""
   end
 
   defp draft_prompt(task, plan) do
