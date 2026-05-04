@@ -183,6 +183,126 @@ defmodule MrEricWeb.AgentLiveTest do
     end)
   end
 
+  test "renders patch approval details and applies an approved patch", %{conn: conn} do
+    workspace =
+      Path.join(System.tmp_dir!(), "mr-eric-live-patch-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+    assert {_, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("git", ["add", "note.txt"], cd: workspace, stderr_to_stdout: true)
+
+    previous_run_opts = Application.get_env(:mr_eric, :live_run_opts, [])
+
+    Application.put_env(:mr_eric, :live_run_opts,
+      orchestrator_module: MrEric.ToolRequestOrchestrator,
+      workspace_root: workspace
+    )
+
+    on_exit(fn ->
+      Application.put_env(:mr_eric, :live_run_opts, previous_run_opts)
+      File.rm_rf!(workspace)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("#task-form", %{"task" => "Needs patch"})
+    |> render_submit()
+
+    assert_eventually(fn -> has_element?(view, "#tool-approval-call-live-patch") end)
+
+    html = render(view)
+    assert html =~ "Pending Patch Approval"
+    assert html =~ "note.txt"
+    assert html =~ "new from patch"
+    assert html =~ "risk: high"
+
+    view
+    |> element("#approve-tool-call-live-patch")
+    |> render_click()
+
+    assert_eventually(fn ->
+      has_element?(view, "#tool-event-call-live-patch-completed") and
+        render(view) =~ "git diff"
+    end)
+
+    assert File.read!(Path.join(workspace, "note.txt")) == "new from patch\n"
+  end
+
+  test "renders target files from patch-only approval payloads", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    patch = """
+    --- a/note.txt
+    +++ b/note.txt
+    @@ -1 +1 @@
+    -old
+    +new
+    """
+
+    send(
+      view.pid,
+      {:tool_approval_requested,
+       %{
+         run_id: nil,
+         approval_id: "approval-patch-only-live",
+         tool_call_id: "patch-only-live",
+         tool: :apply_patch,
+         role: :planner,
+         risk_level: :high,
+         reason: "Patch review",
+         args: %{patch: patch}
+       }}
+    )
+
+    assert_eventually(fn -> has_element?(view, "#tool-approval-patch-only-live") end)
+
+    html = render(view)
+    assert html =~ "note.txt"
+    assert html =~ "1 file will change"
+    refute html =~ "unknown"
+    refute html =~ "0 files will change"
+  end
+
+  test "rejects a pending patch without modifying the file", %{conn: conn} do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "mr-eric-live-patch-reject-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+
+    previous_run_opts = Application.get_env(:mr_eric, :live_run_opts, [])
+
+    Application.put_env(:mr_eric, :live_run_opts,
+      orchestrator_module: MrEric.ToolRequestOrchestrator,
+      workspace_root: workspace
+    )
+
+    on_exit(fn ->
+      Application.put_env(:mr_eric, :live_run_opts, previous_run_opts)
+      File.rm_rf!(workspace)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("#task-form", %{"task" => "Reject patch"})
+    |> render_submit()
+
+    assert_eventually(fn -> has_element?(view, "#tool-approval-call-live-patch") end)
+
+    view
+    |> element("#deny-tool-call-live-patch")
+    |> render_click()
+
+    assert_eventually(fn -> has_element?(view, "#tool-event-call-live-patch-rejected") end)
+    assert File.read!(Path.join(workspace, "note.txt")) == "old\n"
+  end
+
   test "redacts secrets from approval UI payloads", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
 

@@ -6,6 +6,7 @@ defmodule MrEric.Tools.Registry do
   @tools [
     MrEric.Tools.FileRead,
     MrEric.Tools.FileWriteProposal,
+    MrEric.Tools.ApplyPatch,
     MrEric.Tools.ShellCommand,
     MrEric.Tools.GitStatus,
     MrEric.Tools.GitDiff

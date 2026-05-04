@@ -172,6 +172,53 @@ defmodule MrEric.RunsTest do
     assert_receive {:tool_completed, %{tool_call_id: "call-1", result: %{exit_status: 0}}}
   end
 
+  test "RunWorker records changed files from approved apply_patch tools in history" do
+    workspace = tmp_workspace()
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+    assert {_, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("git", ["add", "note.txt"], cd: workspace, stderr_to_stdout: true)
+
+    agent_server = :"agent_#{System.unique_integer([:positive])}"
+    start_supervised!({MrEric.Agent, name: agent_server})
+
+    run = Run.new("Patch run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+
+    assert {:ok, pid} =
+             RunWorker.start_link(
+               run: run,
+               opts: [workspace_root: workspace, agent_server: agent_server],
+               auto_start: false,
+               name: nil
+             )
+
+    assert :ok = Runs.subscribe(run.id)
+
+    send(
+      pid,
+      {:tool_call,
+       %{
+         tool: :apply_patch,
+         tool_call_id: "patch-call",
+         args: %{changes: [%{path: "note.txt", before: "old\n", after: "new\n"}]}
+       }}
+    )
+
+    assert_receive {:tool_approval_requested,
+                    %{tool: :apply_patch, approval_id: approval_id, risk_level: :high}}
+
+    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert_receive {:tool_completed, %{tool_call_id: "patch-call", result: result}}
+    assert result.changed_files == ["note.txt"]
+    assert result.git_diff =~ "+new"
+
+    assert {:ok, %Run{changed_files: ["note.txt"]}} = RunWorker.get_run(pid)
+
+    send(pid, {:run_completed, %{final: "patched"}})
+    assert_receive {:run_completed, %{final: "patched"}}
+
+    assert [%{changed_files: ["note.txt"]} | _] = MrEric.Agent.history(agent_server)
+  end
+
   test "RunWorker broadcasts rejected tool approvals without execution" do
     run = Run.new("Manual denied tool", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)

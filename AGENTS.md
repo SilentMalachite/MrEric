@@ -86,13 +86,14 @@ MrEric.OpenAIClient.list_models(:openai, [])
 ## Phase 5A Tools / approval flow
 
 - Tool implementations live under `MrEric.Tools` and must implement `MrEric.Tools.Tool`.
-- Built-in tools are registered through `MrEric.Tools.Registry`: `:file_read`, `:file_write_proposal`, `:shell_command`, `:git_status`, and `:git_diff`.
+- Built-in tools are registered through `MrEric.Tools.Registry`: `:file_read`, `:file_write_proposal`, `:apply_patch`, `:shell_command`, `:git_status`, and `:git_diff`.
 - All tool execution must go through `MrEric.Tools.Executor`, which calls `MrEric.Tools.Policy` before running a tool.
 - File paths must resolve inside the configured workspace. Reject traversal, absolute paths outside the workspace, protected secret paths, and symlinks that can escape the workspace.
 - Protect likely secret files, including `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
 - `:shell_command` must always require approval. Do not bypass the approval request for shell execution.
+- `:apply_patch` must always require approval. Do not bypass the approval request for file writes.
 - Reject dangerous or mutating shell commands. `:shell_command` should stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, and unlisted commands.
-- Do not implement real file writes in Phase 5A. `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
+- `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
 - Do not implement `git commit`, `git push`, `git reset`, `git clean`, or a full Orchestrator tool loop in Phase 5A.
 - Tool PubSub events use the current run topic `"runs:#{run_id}"`:
   - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
@@ -103,6 +104,19 @@ MrEric.OpenAIClient.list_models(:openai, [])
   - `{:tool_denied, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
   - `{:tool_rejected, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
 - Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
+
+## Phase 6 Patch proposal / apply flow
+
+- Real file writes are only allowed through `:apply_patch`, and only after a signed approval request is approved through `MrEric.Tools.Executor.execute_approved/2`.
+- `:apply_patch` accepts either `%{path: path, patch: unified_diff}` or `%{changes: [%{path: path, before: before, after: after}]}`.
+- Patch validation must run before approval is requested and again immediately before applying.
+- `MrEric.Tools.PatchValidator` must reject workspace escapes, protected secret paths, symlink escapes, oversized patches, binary files or binary patches, missing update targets, stale `before` content, deletion patches, and disallowed create-file extensions.
+- All paths must resolve inside the configured workspace through `MrEric.Tools.Policy`; never write absolute paths outside the workspace.
+- Protected files include `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
+- LiveView must show pending patch approvals with target file, summary, unified diff, risk level, Approve, and Reject controls.
+- After approval and apply, show the resulting `git diff` and record changed file paths in Run history.
+- Rollback for Phase 6 is manual: users inspect the displayed `git diff` and revert through the Codex diff pane. Do not implement `git reset --hard`, `git clean -fd`, force push, or destructive automatic rollback.
+- Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents in patch approval UI, PubSub events, logs intended for users, or browser-side JavaScript.
 
 ## Phase 5B RAG / MCP extension
 

@@ -7,7 +7,9 @@ defmodule MrEric.Tools.Policy do
   read-oriented plus approval-gated.
   """
 
-  @known_tool_names ~w(file_read file_write_proposal shell_command git_status git_diff)
+  alias MrEric.Tools.PatchValidator
+
+  @known_tool_names ~w(file_read file_write_proposal apply_patch shell_command git_status git_diff)
   @allowed_shell_commands ~w(pwd ls cat sed grep rg git)
   @allowed_git_subcommands ~w(status diff log show)
 
@@ -78,6 +80,10 @@ defmodule MrEric.Tools.Policy do
     case key do
       "path" -> :path
       "content" -> :content
+      "patch" -> :patch
+      "changes" -> :changes
+      "before" -> :before
+      "after" -> :after
       "command" -> :command
       "max_bytes" -> :max_bytes
       "staged" -> :staged
@@ -114,6 +120,16 @@ defmodule MrEric.Tools.Policy do
   defp authorize_tool("file_write_proposal", args, opts) do
     with {:ok, _path} <- resolve_workspace_path(arg(args, :path), opts) do
       {:ok, %{approval_required?: false}}
+    end
+  end
+
+  defp authorize_tool("apply_patch", args, opts) do
+    with {:ok, _proposal} <- PatchValidator.validate(args, opts) do
+      {:ok,
+       %{
+         approval_required?: true,
+         reason: "Patch application requires explicit user approval."
+       }}
     end
   end
 

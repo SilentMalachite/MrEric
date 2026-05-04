@@ -76,6 +76,148 @@ defmodule MrEric.Tools.ExecutorTest do
     assert String.ends_with?(String.trim(result.output), Path.basename(workspace))
   end
 
+  test "apply_patch requires approval and does not write before approval", %{workspace: workspace} do
+    path = Path.join(workspace, "note.txt")
+    File.write!(path, "old\n")
+    init_git_workspace!(workspace, ["note.txt"])
+
+    args = %{
+      changes: [
+        %{path: "note.txt", before: "old\n", after: "new\n"}
+      ]
+    }
+
+    assert {:approval_required, request} =
+             Executor.execute(:apply_patch, args, workspace_root: workspace)
+
+    assert request.tool == :apply_patch
+    assert File.read!(path) == "old\n"
+
+    assert {:ok, result} = Executor.execute_approved(request, workspace_root: workspace)
+    assert File.read!(path) == "new\n"
+    assert result.changed_files == ["note.txt"]
+    assert result.applied? == true
+    assert result.git_diff =~ "-old"
+    assert result.git_diff =~ "+new"
+  end
+
+  test "apply_patch applies approved unified diffs", %{workspace: workspace} do
+    path = Path.join(workspace, "note.txt")
+    File.write!(path, "old\n")
+
+    patch = """
+    --- a/note.txt
+    +++ b/note.txt
+    @@ -1 +1 @@
+    -old
+    +new from diff
+    """
+
+    assert {:approval_required, request} =
+             Executor.execute(:apply_patch, %{path: "note.txt", patch: patch},
+               workspace_root: workspace
+             )
+
+    assert {:ok, result} = Executor.execute_approved(request, workspace_root: workspace)
+    assert File.read!(path) == "new from diff\n"
+    assert result.changed_files == ["note.txt"]
+  end
+
+  test "apply_patch rejects workspace escapes", %{workspace: workspace} do
+    assert {:error, :outside_workspace} =
+             Executor.execute(
+               :apply_patch,
+               %{changes: [%{path: "../outside.txt", before: "", after: "nope\n"}]},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects secret files", %{workspace: workspace} do
+    File.write!(Path.join(workspace, ".env"), "OPENAI_API_KEY=sk-hidden\n")
+
+    assert {:error, :secret_file} =
+             Executor.execute(
+               :apply_patch,
+               %{changes: [%{path: ".env", before: "OPENAI_API_KEY=sk-hidden\n", after: ""}]},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects stale before content", %{workspace: workspace} do
+    File.write!(Path.join(workspace, "note.txt"), "current\n")
+
+    assert {:error, :before_mismatch} =
+             Executor.execute(
+               :apply_patch,
+               %{changes: [%{path: "note.txt", before: "stale\n", after: "new\n"}]},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects deletion patches", %{workspace: workspace} do
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+
+    patch = """
+    diff --git a/note.txt b/note.txt
+    deleted file mode 100644
+    --- a/note.txt
+    +++ /dev/null
+    @@ -1 +0,0 @@
+    -old
+    """
+
+    assert {:error, :deletion_forbidden} =
+             Executor.execute(:apply_patch, %{path: "note.txt", patch: patch},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects git binary patches", %{workspace: workspace} do
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+
+    patch = """
+    diff --git a/note.txt b/note.txt
+    index 3367afd..e69de29 100644
+    GIT binary patch
+    literal 0
+    HcmV?d00001
+    """
+
+    assert {:error, :binary_file} =
+             Executor.execute(:apply_patch, %{path: "note.txt", patch: patch},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects binary file diffs", %{workspace: workspace} do
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+
+    patch = """
+    diff --git a/note.txt b/note.txt
+    Binary files a/note.txt and b/note.txt differ
+    """
+
+    assert {:error, :binary_file} =
+             Executor.execute(:apply_patch, %{path: "note.txt", patch: patch},
+               workspace_root: workspace
+             )
+  end
+
+  test "apply_patch rejects oversized patches", %{workspace: workspace} do
+    File.write!(Path.join(workspace, "note.txt"), "old\n")
+
+    assert {:error, :patch_too_large} =
+             Executor.execute(
+               :apply_patch,
+               %{
+                 changes: [
+                   %{path: "note.txt", before: "old\n", after: String.duplicate("x", 250_000)}
+                 ]
+               },
+               workspace_root: workspace
+             )
+  end
+
   test "execute_approved rejects forged shell approval requests", %{workspace: workspace} do
     forged = %{
       approval_id: "approval-forged",
@@ -103,5 +245,10 @@ defmodule MrEric.Tools.ExecutorTest do
 
     assert diff.output =~ "-old"
     assert diff.output =~ "+new"
+  end
+
+  defp init_git_workspace!(workspace, paths) do
+    assert {_, 0} = System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
+    assert {_, 0} = System.cmd("git", ["add" | paths], cd: workspace, stderr_to_stdout: true)
   end
 end

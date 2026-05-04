@@ -65,6 +65,7 @@ defmodule MrEric.Agent do
         review_errors: result.review_errors,
         synthesizer: result.synthesizer,
         synthesis_error: result.synthesis_error,
+        changed_files: [],
         inserted_at: DateTime.utc_now()
       }
 

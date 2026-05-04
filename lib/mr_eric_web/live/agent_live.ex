@@ -215,6 +215,13 @@ defmodule MrEricWeb.AgentLive do
                       {provider_model_label(entry)}
                     </span>
                   </p>
+                  <p
+                    :if={history_changed_files(entry) != ""}
+                    id={"history-changed-files-#{dom_id(entry.id)}"}
+                    class="mt-2 rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700"
+                  >
+                    Changed files: {history_changed_files(entry)}
+                  </p>
                 </div>
               </div>
 
@@ -262,23 +269,61 @@ defmodule MrEricWeb.AgentLive do
         <div
           :for={approval <- pending_tool_approvals(@approvals)}
           id={"tool-approval-#{dom_id(approval.tool_call_id)}"}
-          class="rounded-lg border border-amber-200 bg-amber-50 p-4 shadow-sm"
+          class={[
+            "rounded-lg p-4 shadow-sm",
+            patch_tool?(approval.tool) && "border border-red-200 bg-red-50",
+            !patch_tool?(approval.tool) && "border border-amber-200 bg-amber-50"
+          ]}
         >
           <div class="mb-3 flex items-start justify-between gap-3">
             <div>
-              <p class="text-sm font-semibold text-amber-950">
-                {tool_name(approval.tool)} requires approval
+              <p class={[
+                "text-sm font-semibold",
+                patch_tool?(approval.tool) && "text-red-950",
+                !patch_tool?(approval.tool) && "text-amber-950"
+              ]}>
+                <%= if patch_tool?(approval.tool) do %>
+                  Pending Patch Approval
+                <% else %>
+                  {tool_name(approval.tool)} requires approval
+                <% end %>
               </p>
-              <p class="mt-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+              <p class={[
+                "mt-1 text-xs font-semibold uppercase tracking-wide",
+                patch_tool?(approval.tool) && "text-red-700",
+                !patch_tool?(approval.tool) && "text-amber-700"
+              ]}>
                 {format_tool_role(approval.role)} / risk: {format_value(approval.risk_level)}
               </p>
-              <p class="mt-1 text-xs text-amber-800">{approval.reason}</p>
+              <p class={[
+                "mt-1 text-xs",
+                patch_tool?(approval.tool) && "text-red-800",
+                !patch_tool?(approval.tool) && "text-amber-800"
+              ]}>
+                {approval.reason}
+              </p>
             </div>
             <span class={status_badge_class(:reviewing)}>pending</span>
           </div>
 
-          <p class="mb-1 text-xs font-semibold text-amber-900">Input</p>
-          <pre class="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-amber-200 bg-white p-3 text-xs text-zinc-800">{format_tool_payload(approval.args)}</pre>
+          <%= if patch_tool?(approval.tool) do %>
+            <div class="mb-3 grid gap-2 rounded-md border border-red-200 bg-white p-3 text-xs text-zinc-800 sm:grid-cols-2">
+              <div>
+                <p class="font-semibold text-red-900">Target file</p>
+                <p class="mt-1 font-mono">{patch_target_files(approval.args)}</p>
+              </div>
+              <div>
+                <p class="font-semibold text-red-900">Summary</p>
+                <p class="mt-1">{patch_summary(approval.args)}</p>
+              </div>
+            </div>
+
+            <p class="mb-1 text-xs font-semibold text-red-900">Unified diff</p>
+            <pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-red-200 bg-white p-3 text-xs text-zinc-800">{patch_diff(approval.args)}</pre>
+          <% else %>
+            <p class="mb-1 text-xs font-semibold text-amber-900">Input</p>
+            <pre class="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-amber-200 bg-white p-3 text-xs text-zinc-800">{format_tool_payload(approval.args)}</pre>
+          <% end %>
 
           <div class="mt-3 flex gap-2">
             <button
@@ -678,6 +723,16 @@ defmodule MrEricWeb.AgentLive do
   defp format_tool_role(nil), do: "unknown role"
   defp format_tool_role(role), do: format_value(role)
 
+  defp tool_event_body(%{tool: tool, status: :completed, result: result})
+       when tool in [:apply_patch, "apply_patch"] do
+    format_patch_result(result)
+  end
+
+  defp tool_event_body(%{tool: tool, status: :completed, result: result})
+       when tool in [:file_write_proposal, "file_write_proposal"] do
+    format_patch_proposal_result(result)
+  end
+
   defp tool_event_body(%{status: :completed, result: result}), do: format_tool_payload(result)
   defp tool_event_body(%{status: :failed, error: error}), do: to_string(error)
 
@@ -693,6 +748,167 @@ defmodule MrEricWeb.AgentLive do
   defp format_tool_payload(payload) do
     inspect(payload, pretty: true, limit: 20, printable_limit: 1_000)
   end
+
+  defp patch_tool?(tool), do: tool in [:apply_patch, "apply_patch"]
+
+  defp patch_target_files(args) do
+    args
+    |> patch_files()
+    |> case do
+      [] -> "unknown"
+      files -> Enum.join(files, ", ")
+    end
+  end
+
+  defp patch_summary(args) do
+    args
+    |> patch_files()
+    |> case do
+      [file] -> "1 file will change: #{file}"
+      files -> "#{length(files)} files will change"
+    end
+  end
+
+  defp patch_diff(args) when is_map(args) do
+    cond do
+      is_binary(Map.get(args, :patch)) ->
+        Map.get(args, :patch)
+
+      is_binary(Map.get(args, "patch")) ->
+        Map.get(args, "patch")
+
+      is_list(Map.get(args, :changes)) ->
+        args |> Map.get(:changes) |> Enum.map_join("\n", &change_diff_preview/1)
+
+      is_list(Map.get(args, "changes")) ->
+        args |> Map.get("changes") |> Enum.map_join("\n", &change_diff_preview/1)
+
+      true ->
+        format_tool_payload(args)
+    end
+  end
+
+  defp patch_diff(args), do: format_tool_payload(args)
+
+  defp patch_files(args) when is_map(args) do
+    cond do
+      is_list(Map.get(args, :changes)) ->
+        args |> Map.get(:changes) |> Enum.map(&patch_change_path/1) |> Enum.reject(&(&1 == ""))
+
+      is_list(Map.get(args, "changes")) ->
+        args |> Map.get("changes") |> Enum.map(&patch_change_path/1) |> Enum.reject(&(&1 == ""))
+
+      is_binary(Map.get(args, :path)) ->
+        [Map.get(args, :path)]
+
+      is_binary(Map.get(args, "path")) ->
+        [Map.get(args, "path")]
+
+      is_binary(Map.get(args, :patch)) ->
+        patch_paths(Map.get(args, :patch))
+
+      is_binary(Map.get(args, "patch")) ->
+        patch_paths(Map.get(args, "patch"))
+
+      true ->
+        []
+    end
+  end
+
+  defp patch_files(_args), do: []
+
+  defp patch_change_path(change) when is_map(change),
+    do: Map.get(change, :path) || Map.get(change, "path") || ""
+
+  defp patch_change_path(_change), do: ""
+
+  defp patch_paths(patch) do
+    patch
+    |> String.split("\n")
+    |> Enum.flat_map(&patch_line_paths/1)
+    |> Enum.reject(&(&1 in [nil, "", "/dev/null"]))
+    |> Enum.map(&strip_patch_prefix/1)
+    |> Enum.uniq()
+  end
+
+  defp patch_line_paths("--- " <> rest), do: [patch_header_path(rest)]
+  defp patch_line_paths("+++ " <> rest), do: [patch_header_path(rest)]
+
+  defp patch_line_paths("diff --git " <> rest) do
+    rest
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.take(2)
+  end
+
+  defp patch_line_paths(_line), do: []
+
+  defp patch_header_path(rest) do
+    rest
+    |> String.split(~r/\s+/, parts: 2)
+    |> List.first()
+  end
+
+  defp strip_patch_prefix(path) do
+    path
+    |> String.trim()
+    |> String.replace_prefix("a/", "")
+    |> String.replace_prefix("b/", "")
+  end
+
+  defp change_diff_preview(change) when is_map(change) do
+    path = patch_change_path(change)
+    before = Map.get(change, :before) || Map.get(change, "before") || ""
+    proposed = Map.get(change, :after) || Map.get(change, "after") || ""
+
+    Enum.join(
+      ["--- a/#{path}", "+++ b/#{path}", "@@ -1 +1 @@"]
+      |> Kernel.++(Enum.map(diff_preview_lines(before), &("-" <> &1)))
+      |> Kernel.++(Enum.map(diff_preview_lines(proposed), &("+" <> &1))),
+      "\n"
+    )
+  end
+
+  defp change_diff_preview(change), do: inspect(change, printable_limit: 1_000)
+
+  defp diff_preview_lines(""), do: []
+  defp diff_preview_lines(content), do: String.split(to_string(content), "\n", trim: true)
+
+  defp format_patch_result(result) when is_map(result) do
+    changed_files =
+      result
+      |> Map.get(:changed_files, Map.get(result, "changed_files", []))
+      |> normalize_file_list()
+      |> Enum.join(", ")
+
+    diff =
+      Map.get(result, :git_diff) || Map.get(result, "git_diff") || Map.get(result, :diff) || ""
+
+    [
+      "Patch applied",
+      if(changed_files == "", do: nil, else: "Changed files: #{changed_files}"),
+      "git diff",
+      diff
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
+  end
+
+  defp format_patch_result(result), do: format_tool_payload(result)
+
+  defp format_patch_proposal_result(result) when is_map(result) do
+    path = Map.get(result, :path) || Map.get(result, "path") || "unknown"
+    diff = Map.get(result, :diff) || Map.get(result, "diff") || ""
+
+    [
+      "Patch proposal",
+      "Target file: #{path}",
+      "Unified diff",
+      diff
+    ]
+    |> Enum.join("\n\n")
+  end
+
+  defp format_patch_proposal_result(result), do: format_tool_payload(result)
 
   defp dom_id(value) do
     value
@@ -721,6 +937,16 @@ defmodule MrEricWeb.AgentLive do
   end
 
   defp history_final(entry), do: Map.get(entry, :final) || Map.get(entry, :code) || ""
+
+  defp history_changed_files(entry) do
+    entry
+    |> Map.get(:changed_files, [])
+    |> normalize_file_list()
+    |> Enum.join(", ")
+  end
+
+  defp normalize_file_list(files) when is_list(files), do: Enum.filter(files, &is_binary/1)
+  defp normalize_file_list(_files), do: []
 
   defp provider_model_label(entry) do
     provider = format_value(Map.get(entry, :provider))

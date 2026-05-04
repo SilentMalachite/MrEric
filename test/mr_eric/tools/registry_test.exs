@@ -7,6 +7,7 @@ defmodule MrEric.Tools.RegistryTest do
     assert Registry.names() == [
              :file_read,
              :file_write_proposal,
+             :apply_patch,
              :shell_command,
              :git_status,
              :git_diff

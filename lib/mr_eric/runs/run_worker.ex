@@ -494,7 +494,9 @@ defmodule MrEric.Runs.RunWorker do
     Map.put(request, :risk_level, risk_level_for(Map.get(request, :tool)))
   end
 
-  defp risk_level_for(tool) when tool in [:shell_command, "shell_command"], do: :high
+  defp risk_level_for(tool)
+       when tool in [:shell_command, "shell_command", :apply_patch, "apply_patch"],
+       do: :high
 
   defp risk_level_for(tool)
        when tool in [:file_write_proposal, "file_write_proposal", :git_diff, "git_diff"],

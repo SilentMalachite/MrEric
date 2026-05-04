@@ -41,6 +41,7 @@ defmodule MrEric.Runs.Run do
     :error,
     status: :queued,
     stages: %{},
+    changed_files: [],
     final: "",
     inserted_at: nil,
     updated_at: nil
@@ -191,6 +192,20 @@ defmodule MrEric.Runs.Run do
     end
   end
 
+  def apply_event(%__MODULE__{} = run, :tool_completed, payload) do
+    payload
+    |> changed_files_from_tool_result()
+    |> case do
+      [] ->
+        run
+
+      changed_files ->
+        run
+        |> Map.update!(:changed_files, &Enum.uniq(&1 ++ changed_files))
+        |> touch()
+    end
+  end
+
   def apply_event(%__MODULE__{} = run, _event, _payload), do: run
 
   def stage(%__MODULE__{stages: stages}, role) do
@@ -213,9 +228,27 @@ defmodule MrEric.Runs.Run do
       review_errors: failed_stage_results(run, [:critic, :reviewer]),
       synthesizer: stage_result(run, :synthesizer),
       synthesis_error: stage(run, :synthesizer).error,
+      changed_files: run.changed_files,
       inserted_at: run.inserted_at
     }
   end
+
+  defp changed_files_from_tool_result(%{tool: tool, result: result})
+       when tool in [:apply_patch, "apply_patch"] and is_map(result) do
+    result
+    |> Map.get(:changed_files, Map.get(result, "changed_files", []))
+    |> normalize_changed_files()
+  end
+
+  defp changed_files_from_tool_result(_payload), do: []
+
+  defp normalize_changed_files(files) when is_list(files) do
+    files
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_changed_files(_files), do: []
 
   defp default_stages(provider, model) do
     Map.new(@roles, fn role -> {role, default_stage(provider, model)} end)
