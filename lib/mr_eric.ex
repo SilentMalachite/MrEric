@@ -27,11 +27,13 @@ defmodule MrEric do
       {:ok, %{task: "Create a simple Phoenix controller", plan: "...", code: "...", inserted_at: ~U[2025-11-19 10:00:00Z]}}
 
   """
-  def execute_task(task) when is_binary(task) and task != "" do
-    Agent.execute(task)
+  def execute_task(task, opts \\ [])
+
+  def execute_task(task, opts) when is_binary(task) and task != "" and is_list(opts) do
+    Agent.execute(task, opts)
   end
 
-  def execute_task(_task) do
+  def execute_task(_task, _opts) do
     {:error, :invalid_task}
   end
 

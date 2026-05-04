@@ -161,7 +161,7 @@ defmodule MrEricWeb.AgentLive do
     pid = self()
 
     Task.start(fn ->
-      case Agent.execute(task) do
+      case Agent.execute(task, model: model) do
         {:ok, entry} -> send(pid, {:history_updated, entry})
         {:error, reason} -> send(pid, {:agent_error, reason})
       end
