@@ -42,6 +42,8 @@ defmodule MrEric.Agent do
       entry = %{
         id: System.unique_integer([:positive]),
         task: task,
+        provider: Keyword.get(opts, :provider),
+        model: Keyword.get(opts, :model),
         plan: result.plan,
         code: result.final,
         final: result.final,
