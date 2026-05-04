@@ -129,6 +129,12 @@ latest = MrEric.get_latest_task()
 # OpenAI API の直接呼び出し
 response = MrEric.OpenAIClient.chat_completion("Hello, AI!", model: "gpt-4")
 
+# プロバイダをリクエスト単位で指定
+response = MrEric.OpenAIClient.chat_completion("Hello", provider: :ollama, model: "llama3")
+
+# OpenAI 互換 /v1/models の取得
+{:ok, models} = MrEric.OpenAIClient.list_models(:openai, [])
+
 # ストリーミング応答
 MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
 receive do
@@ -281,8 +287,15 @@ MrEric/
 
 #### `MrEric.OpenAIClient`
 - OpenAI 互換 API との通信（OpenAI/Grok/OpenRouter/Ollama/LM Studio）
+- `MrEric.LLM.OpenAICompat` への後方互換ラッパー
 - ストリーミング応答のサポート
+- `/v1/models` 取得用の `list_models/2`
 - 全モデル対応（プロバイダ側のモデル名で指定）
+
+#### `MrEric.LLM.Provider` / `MrEric.LLM.OpenAICompat`
+- LLM プロバイダ共通 behaviour と OpenAI 互換実装
+- `provider:` / `model:` opts によるリクエスト単位の切替
+- HTTP クライアントは `Req` を使用
 
 #### `MrEricWeb.AgentLive`
 - メイン LiveView

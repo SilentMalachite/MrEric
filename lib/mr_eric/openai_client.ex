@@ -1,183 +1,40 @@
 defmodule MrEric.OpenAIClient do
   @moduledoc """
-  OpenAI API client for chat completions.
+  Backward-compatible OpenAI client facade.
 
-  Supports all OpenAI models including:
-  - GPT-4 models: gpt-4, gpt-4-turbo, gpt-4o, gpt-4o-mini
-  - GPT-3.5 models: gpt-3.5-turbo
-  - O1 models: o1-preview, o1-mini
-
-  Default model can be configured in config.exs:
-
-      config :mr_eric, openai_model: "gpt-4o"
-
-  Or specify per request:
-
-      OpenAIClient.chat_completion("Hello", model: "gpt-3.5-turbo")
+  New LLM provider code lives under `MrEric.LLM`. Existing callers can keep
+  using this module while passing provider/model options through to the LLM
+  layer.
   """
 
-  @default_base_url "https://api.openai.com/v1"
+  alias MrEric.LLM.OpenAICompat
 
   @doc """
   Performs a chat completion request.
 
   ## Options
 
-    - `:model` - OpenAI model to use (default: configured in config.exs)
-
-  ## Examples
-
-      chat_completion("Hello, world!")
-      chat_completion("Write a haiku", model: "gpt-4")
+    - `:provider` - Provider to use, such as `:openai`, `:openrouter`, or `:ollama`
+    - `:model` - Model to use
   """
   def chat_completion(prompt, opts \\ []) do
-    model = Keyword.get(opts, :model, get_default_model())
-
-    body = %{
-      model: model,
-      messages: [
-        %{role: "user", content: prompt}
-      ]
-    }
-
-    with {:ok, req} <- request(),
-         {:ok, %{status: 200, body: body}} <- Req.post(req, url: "/chat/completions", json: body) do
-      {:ok, get_in(body, ["choices", Access.at(0), "message", "content"])}
-    else
-      {:ok, %{status: status, body: body}} -> {:error, %{status: status, body: body}}
-      {:error, reason} -> {:error, reason}
-    end
+    OpenAICompat.chat_completion(prompt, opts)
   end
 
   @doc """
   Performs a streaming chat completion request.
 
-  ## Options
-
-    - `:model` - OpenAI model to use (default: configured in config.exs)
-
-  ## Examples
-
-      stream_completion("Tell me a story", self())
-      stream_completion("Write code", self(), model: "gpt-4-turbo")
+  Streaming chunks are sent to `pid` as `{:chunk, text}` and completion as
+  `{:complete, :ok}`.
   """
   def stream_completion(prompt, pid, opts \\ []) do
-    model = Keyword.get(opts, :model, get_default_model())
-
-    body = %{
-      model: model,
-      stream: true,
-      messages: [%{role: "user", content: prompt}]
-    }
-
-    case request() do
-      {:ok, req} ->
-        Req.post(req,
-          url: "/chat/completions",
-          json: body,
-          into: fn
-            {:data, data}, acc ->
-              data
-              |> String.split("data: ")
-              |> Enum.map(&String.trim/1)
-              |> Enum.reject(&(&1 == ""))
-              |> Enum.each(fn chunk ->
-                if chunk == "[DONE]" do
-                  send(pid, {:complete, :ok})
-                else
-                  case Jason.decode(chunk) do
-                    {:ok, response} ->
-                      text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
-                      if text != "", do: send(pid, {:chunk, text})
-                    _ -> :ok
-                  end
-                end
-              end)
-
-              {:cont, acc}
-          end
-        )
-        |> case do
-          {:ok, _} -> :ok
-          {:error, reason} -> send(pid, {:agent_error, reason})
-        end
-
-      {:error, reason} ->
-        send(pid, {:agent_error, reason})
-    end
+    OpenAICompat.stream_completion(prompt, pid, opts)
   end
 
-  defp request do
-    options = Application.get_env(:mr_eric, :openai_req_options, [])
-
-    provider = get_provider()
-    base_url = base_url_for(provider)
-    api_key = get_api_key(provider)
-
-    if is_nil(api_key) and provider in [:openai, :grok, :openrouter] do
-      {:error, :missing_api_key}
-    else
-      headers_base = [{"content-type", "application/json"}]
-
-      headers_auth =
-        case api_key do
-          key when is_binary(key) and byte_size(key) > 0 -> [{"authorization", "Bearer #{key}"}]
-          _ -> []
-        end
-
-      headers = headers_auth ++ headers_base ++ provider_extra_headers(provider)
-
-      req =
-        Req.new(
-          base_url: base_url,
-          finch: MrEric.Finch,
-          headers: headers
-        )
-        |> Req.merge(options)
-
-      {:ok, req}
-    end
-  end
-
-  defp get_api_key(:openai), do: System.get_env("OPENAI_API_KEY")
-  defp get_api_key(:grok), do: System.get_env("GROK_API_KEY") || System.get_env("XAI_API_KEY")
-  defp get_api_key(:openrouter), do: System.get_env("OPENROUTER_API_KEY")
-  # Local providers typically do not require an API key; allow optional override
-  defp get_api_key(:ollama), do: System.get_env("OLLAMA_API_KEY")
-  defp get_api_key(:lmstudio), do: System.get_env("LMSTUDIO_API_KEY")
-
-  defp get_provider do
-    case (Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai")
-         |> String.downcase() do
-      "openrouter" -> :openrouter
-      "grok" -> :grok
-      "xai" -> :grok
-      "ollama" -> :ollama
-      "lmstudio" -> :lmstudio
-      "llstudio" -> :lmstudio
-      _ -> :openai
-    end
-  end
-
-  defp base_url_for(:openai), do: @default_base_url
-  defp base_url_for(:grok), do: "https://api.x.ai/v1"
-  defp base_url_for(:openrouter), do: "https://openrouter.ai/api/v1"
-  defp base_url_for(:ollama), do: System.get_env("OLLAMA_BASE_URL") || "http://localhost:11434/v1"
-  defp base_url_for(:lmstudio), do: System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
-
-  defp provider_extra_headers(:openrouter) do
-    referer = System.get_env("OPENROUTER_SITE_URL") || System.get_env("SITE_URL")
-    title = System.get_env("OPENROUTER_APP_NAME") || "MrEric"
-
-    Enum.reject([
-      if(referer, do: {"HTTP-Referer", referer}),
-      {"X-Title", title}
-    ], &is_nil/1)
-  end
-
-  defp provider_extra_headers(_), do: []
-
-  defp get_default_model do
-    Application.get_env(:mr_eric, :openai_model, "gpt-4o")
+  @doc """
+  Lists models from an OpenAI-compatible `/v1/models` endpoint.
+  """
+  def list_models(provider, opts \\ []) do
+    OpenAICompat.list_models(provider, opts)
   end
 end

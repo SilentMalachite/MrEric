@@ -13,6 +13,9 @@ MrEric uses a single client module (`MrEric.OpenAIClient`) to talk to multiple O
 Notes:
 
 - All providers are accessed via an OpenAI-compatible endpoint: `/v1/chat/completions`.
+- Provider implementations live under `MrEric.LLM`; `MrEric.OpenAIClient` is a backward-compatible wrapper.
+- Use `MrEric.OpenAIClient.list_models(provider, opts)` or `MrEric.LLM.OpenAICompat.list_models(provider, opts)` to call `/v1/models`.
+- Request-level `provider:` and `model:` opts should be passed through to the LLM layer.
 - Local providers (Ollama / LM Studio) do not require API keys; base URLs default to:
   - Ollama: `http://localhost:11434/v1` (override with `OLLAMA_BASE_URL`)
   - LM Studio: `http://localhost:1234/v1` (override with `LMSTUDIO_BASE_URL`)
@@ -55,6 +58,9 @@ MrEric.OpenAIClient.chat_completion("Hello", model: "gpt-4o")
 
 # Streaming
 MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
+
+# Models
+MrEric.OpenAIClient.list_models(:openai, [])
 ```
 
 ## Project guidelines

@@ -9,12 +9,16 @@ defmodule MrEric.OpenAIMock do
         {:ok, body, _conn} = Plug.Conn.read_body(conn)
         params = Jason.decode!(body)
         prompt = get_in(params, ["messages", Access.at(0), "content"]) || ""
+        model = Map.get(params, "model")
 
         content =
           cond do
+            String.contains?(prompt, "report model") ->
+              "model:#{model}"
+
             String.contains?(prompt, "plan") ->
               "1. Create a controller\n2. Add a route"
-            
+
             String.contains?(prompt, "Generate Elixir code") ->
               """
               defmodule MrEricWeb.MyController do
@@ -22,7 +26,7 @@ defmodule MrEric.OpenAIMock do
                 def index(conn, _params), do: text(conn, "Hello")
               end
               """
-            
+
             true ->
               "Mock response"
           end
@@ -33,26 +37,33 @@ defmodule MrEric.OpenAIMock do
               "message" => %{
                 "content" => content
               },
-              "delta" => %{ # For streaming
+              "delta" => %{
                 "content" => content
               }
             }
           ]
         }
 
-        # Handle streaming if requested?
-        # The client implementation handles streaming differently (receiving chunks).
-        # Testing streaming with a simple plug is harder because we need to send chunks.
-        # For now, let's focus on normal requests.
-        # If stream=true is in params, we might need to simulate SSE.
-        
         if Map.get(params, "stream") do
-           send_sse_response(conn, content)
+          send_sse_response(conn, content)
         else
-           conn
-           |> Plug.Conn.put_resp_header("content-type", "application/json")
-           |> Plug.Conn.send_resp(200, Jason.encode!(response))
+          conn
+          |> Plug.Conn.put_resp_header("content-type", "application/json")
+          |> Plug.Conn.send_resp(200, Jason.encode!(response))
         end
+
+      "/v1/models" ->
+        response = %{
+          "object" => "list",
+          "data" => [
+            %{"id" => "gpt-4o", "object" => "model"},
+            %{"id" => "gpt-4o-mini", "object" => "model"}
+          ]
+        }
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
 
       _ ->
         Plug.Conn.send_resp(conn, 404, "Not Found")
@@ -62,14 +73,14 @@ defmodule MrEric.OpenAIMock do
   defp send_sse_response(conn, content) do
     # Minimal SSE simulation
     conn = Plug.Conn.send_chunked(conn, 200)
-    
+
     chunk_data = %{
       "choices" => [%{"delta" => %{"content" => content}}]
     }
-    
+
     chunk = "data: #{Jason.encode!(chunk_data)}\n\n"
     done = "data: [DONE]\n\n"
-    
+
     {:ok, conn} = Plug.Conn.chunk(conn, chunk)
     {:ok, conn} = Plug.Conn.chunk(conn, done)
     conn
