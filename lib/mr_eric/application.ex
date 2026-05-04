@@ -7,11 +7,14 @@ defmodule MrEric.Application do
 
   @impl true
   def start(_type, _args) do
+    MrEric.Tools.Executor.init_approval_secret()
+
     children = [
       MrEricWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:mr_eric, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: MrEric.PubSub},
       {Finch, name: MrEric.Finch},
+      {Task.Supervisor, name: MrEric.Agent.TaskSupervisor},
       MrEric.Agent,
       {Registry, keys: :unique, name: MrEric.Runs.Registry},
       MrEric.Runs.RunSupervisor,

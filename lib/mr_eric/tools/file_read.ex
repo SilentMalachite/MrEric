@@ -44,7 +44,6 @@ defmodule MrEric.Tools.FileRead do
   end
 
   defp ensure_regular_file(%File.Stat{type: :regular}), do: :ok
-  defp ensure_regular_file(%File.Stat{type: :symlink}), do: :ok
   defp ensure_regular_file(_stat), do: {:error, :not_regular_file}
 
   defp max_bytes(args, opts) do

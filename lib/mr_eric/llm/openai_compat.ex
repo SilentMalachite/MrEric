@@ -56,29 +56,7 @@ defmodule MrEric.LLM.OpenAICompat do
         Req.post(req,
           url: "/chat/completions",
           json: body,
-          into: fn
-            {:data, data}, acc ->
-              data
-              |> String.split("data: ")
-              |> Enum.map(&String.trim/1)
-              |> Enum.reject(&(&1 == ""))
-              |> Enum.each(fn chunk ->
-                if chunk == "[DONE]" do
-                  send(pid, {:complete, :ok})
-                else
-                  case Jason.decode(chunk) do
-                    {:ok, response} ->
-                      text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
-                      if text != "", do: send(pid, {:chunk, text})
-
-                    _ ->
-                      :ok
-                  end
-                end
-              end)
-
-              {:cont, acc}
-          end
+          into: &handle_sse_chunk(&1, &2, pid)
         )
         |> case do
           {:ok, _} -> :ok
@@ -87,6 +65,64 @@ defmodule MrEric.LLM.OpenAICompat do
 
       {:error, reason} ->
         send(pid, {:agent_error, reason})
+    end
+  end
+
+  @doc false
+  def handle_sse_chunk({:data, data}, {req, resp}, pid) do
+    buffer = Map.get(resp.private, :__sse_buffer__, "") <> data
+    {events, rest} = split_sse_events(buffer)
+    Enum.each(events, &dispatch_sse_event(&1, pid))
+    resp = %{resp | private: Map.put(resp.private, :__sse_buffer__, rest)}
+    {:cont, {req, resp}}
+  end
+
+  @doc false
+  def split_sse_events(buffer) do
+    parts = :binary.split(buffer, "\n\n", [:global])
+
+    case List.pop_at(parts, -1) do
+      {nil, _events} -> {[], buffer}
+      {tail, events} -> {events, tail}
+    end
+  end
+
+  defp dispatch_sse_event(event, pid) do
+    event
+    |> String.split("\n")
+    |> Enum.each(fn line ->
+      cond do
+        line == "" or String.starts_with?(line, ":") ->
+          :ok
+
+        String.starts_with?(line, "data:") ->
+          handle_data_line(line, pid)
+
+        true ->
+          :ok
+      end
+    end)
+  end
+
+  defp handle_data_line(line, pid) do
+    payload = line |> String.trim_leading("data:") |> String.trim()
+
+    cond do
+      payload == "" ->
+        :ok
+
+      payload == "[DONE]" ->
+        send(pid, {:complete, :ok})
+
+      true ->
+        case Jason.decode(payload) do
+          {:ok, response} ->
+            text = get_in(response, ["choices", Access.at(0), "delta", "content"]) || ""
+            if text != "", do: send(pid, {:chunk, text})
+
+          _ ->
+            :ok
+        end
     end
   end
 

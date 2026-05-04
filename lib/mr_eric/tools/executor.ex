@@ -97,18 +97,18 @@ defmodule MrEric.Tools.Executor do
     |> Base.url_encode64(padding: false)
   end
 
+  @doc """
+  Initializes the approval secret used to sign tool approval tokens.
+
+  Called once from `MrEric.Application.start/2` so token verification can read
+  the secret with `:persistent_term.get/1` without racing on first use.
+  """
+  def init_approval_secret do
+    :persistent_term.put({__MODULE__, :approval_secret}, :crypto.strong_rand_bytes(32))
+  end
+
   defp approval_secret do
-    key = {__MODULE__, :approval_secret}
-
-    case :persistent_term.get(key, nil) do
-      nil ->
-        secret = :crypto.strong_rand_bytes(32)
-        :persistent_term.put(key, secret)
-        secret
-
-      secret ->
-        secret
-    end
+    :persistent_term.get({__MODULE__, :approval_secret})
   end
 
   defp new_id(prefix) do
