@@ -51,7 +51,9 @@ if config_env() == :prod do
     secret_key_base: secret_key_base
 
   # Ensure the appropriate AI provider API key is present in production
-  provider = (Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai") |> String.downcase()
+  provider =
+    (Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai")
+    |> String.downcase()
 
   case provider do
     "openrouter" ->
@@ -116,5 +118,4 @@ if config_env() == :prod do
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
-
 end

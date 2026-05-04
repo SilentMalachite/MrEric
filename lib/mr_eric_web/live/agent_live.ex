@@ -81,8 +81,7 @@ defmodule MrEricWeb.AgentLive do
             >
               <%= if @loading do %>
                 <span class="flex items-center justify-center">
-                  <.icon name="hero-arrow-path" class="w-5 h-5 mr-2 animate-spin" />
-                  Processing...
+                  <.icon name="hero-arrow-path" class="w-5 h-5 mr-2 animate-spin" /> Processing...
                 </span>
               <% else %>
                 Execute Task
@@ -93,49 +92,49 @@ defmodule MrEricWeb.AgentLive do
 
         <div :if={@response != ""} class="rounded-lg border border-blue-200 bg-blue-50 p-6 shadow-sm">
           <h2 class="font-semibold text-lg mb-3 text-blue-900">
-            <.icon name="hero-sparkles" class="w-5 h-5 inline mr-2" />
-            Streaming Response
+            <.icon name="hero-sparkles" class="w-5 h-5 inline mr-2" /> Streaming Response
           </h2>
           <pre class="whitespace-pre-wrap text-sm font-mono text-zinc-800 bg-white p-4 rounded border">{@response}</pre>
         </div>
 
         <div class="space-y-4">
           <h2 class="font-semibold text-xl flex items-center">
-            <.icon name="hero-clock" class="w-6 h-6 mr-2" />
-            Execution History
+            <.icon name="hero-clock" class="w-6 h-6 mr-2" /> Execution History
           </h2>
           <div id="history" phx-update="stream" class="space-y-4">
-            <div :for={{id, entry} <- @streams.history} id={id} class="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm space-y-3">
-            <div class="flex items-start">
-              <.icon name="hero-chat-bubble-left-right" class="w-5 h-5 mt-0.5 mr-2 text-zinc-400" />
-              <div class="flex-1">
-                <p class="font-medium text-zinc-900">{entry.task}</p>
-                <p class="text-xs text-zinc-500 mt-1">
-                  {Calendar.strftime(entry.inserted_at, "%Y-%m-%d %H:%M:%S")}
-                </p>
-              </div>
-            </div>
-
-            <div class="pl-7">
-              <div class="mb-3">
-                <p class="text-sm font-semibold text-zinc-700 mb-1">
-                  <.icon name="hero-light-bulb" class="w-4 h-4 inline mr-1" />
-                  Plan:
-                </p>
-                <pre class="whitespace-pre-wrap text-sm bg-zinc-50 p-3 rounded border border-zinc-200">{entry.plan}</pre>
+            <div
+              :for={{id, entry} <- @streams.history}
+              id={id}
+              class="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm space-y-3"
+            >
+              <div class="flex items-start">
+                <.icon name="hero-chat-bubble-left-right" class="w-5 h-5 mt-0.5 mr-2 text-zinc-400" />
+                <div class="flex-1">
+                  <p class="font-medium text-zinc-900">{entry.task}</p>
+                  <p class="text-xs text-zinc-500 mt-1">
+                    {Calendar.strftime(entry.inserted_at, "%Y-%m-%d %H:%M:%S")}
+                  </p>
+                </div>
               </div>
 
-              <div>
-                <p class="text-sm font-semibold text-zinc-700 mb-1">
-                  <.icon name="hero-code-bracket" class="w-4 h-4 inline mr-1" />
-                  Code:
-                </p>
-                <pre class="whitespace-pre-wrap text-sm bg-zinc-900 text-zinc-100 p-3 rounded font-mono">{entry.code}</pre>
+              <div class="pl-7">
+                <div class="mb-3">
+                  <p class="text-sm font-semibold text-zinc-700 mb-1">
+                    <.icon name="hero-light-bulb" class="w-4 h-4 inline mr-1" /> Plan:
+                  </p>
+                  <pre class="whitespace-pre-wrap text-sm bg-zinc-50 p-3 rounded border border-zinc-200">{entry.plan}</pre>
+                </div>
+
+                <div>
+                  <p class="text-sm font-semibold text-zinc-700 mb-1">
+                    <.icon name="hero-code-bracket" class="w-4 h-4 inline mr-1" /> Code:
+                  </p>
+                  <pre class="whitespace-pre-wrap text-sm bg-zinc-900 text-zinc-100 p-3 rounded font-mono">{entry.code}</pre>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
       </div>
     </Layouts.app>
     """
