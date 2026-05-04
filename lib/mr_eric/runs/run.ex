@@ -9,6 +9,7 @@ defmodule MrEric.Runs.Run do
   """
 
   alias MrEric.Runs.Events
+  alias MrEric.Runs.Trace
 
   @statuses [
     :queued,
@@ -39,6 +40,7 @@ defmodule MrEric.Runs.Run do
     :provider,
     :model,
     :error,
+    :trace,
     status: :queued,
     stages: %{},
     changed_files: [],
@@ -54,14 +56,16 @@ defmodule MrEric.Runs.Run do
     now = DateTime.utc_now()
     provider = Keyword.get(opts, :provider)
     model = Keyword.get(opts, :model)
+    id = Keyword.get(opts, :id) || new_id()
 
     %__MODULE__{
-      id: Keyword.get(opts, :id) || new_id(),
+      id: id,
       task: task,
       provider: provider,
       model: model,
       status: :queued,
       stages: default_stages(provider, model),
+      trace: Trace.new(id, task, provider, model),
       final: "",
       inserted_at: now,
       updated_at: now
@@ -78,17 +82,21 @@ defmodule MrEric.Runs.Run do
   def terminal?(%__MODULE__{status: status}), do: status in [:completed, :failed, :cancelled]
 
   def apply_event(%__MODULE__{} = run, {event, payload}) do
-    apply_event(run, event, payload)
+    run
+    |> do_apply_event(event, payload)
+    |> record_trace(event, payload)
   end
 
-  def apply_event(%__MODULE__{} = run, :run_started, payload) do
+  def apply_event(%__MODULE__{} = run, event, payload), do: apply_event(run, {event, payload})
+
+  defp do_apply_event(%__MODULE__{} = run, :run_started, payload) do
     run
     |> Map.put(:status, :running)
     |> maybe_put_task(payload)
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :stage_started, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :stage_started, payload) do
     role = role_from_payload(payload)
 
     run
@@ -102,7 +110,7 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :stage_chunk, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :stage_chunk, payload) do
     role = role_from_payload(payload)
     chunk = Map.get(payload, :chunk, "")
 
@@ -117,7 +125,7 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :stage_completed, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :stage_completed, payload) do
     role = role_from_payload(payload)
     content = Map.get(payload, :content, "")
 
@@ -132,7 +140,7 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :stage_failed, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :stage_failed, payload) do
     role = role_from_payload(payload)
     error = Events.public_error(Map.get(payload, :error) || Map.get(payload, :reason))
 
@@ -146,7 +154,7 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :run_completed, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :run_completed, payload) do
     run
     |> Map.put(:status, :completed)
     |> Map.put(:final, Map.get(payload, :final, run.final) || "")
@@ -154,7 +162,7 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :run_failed, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :run_failed, payload) do
     error = Events.public_error(Map.get(payload, :error) || Map.get(payload, :reason))
 
     run
@@ -163,19 +171,19 @@ defmodule MrEric.Runs.Run do
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :run_cancelled, _payload) do
+  defp do_apply_event(%__MODULE__{} = run, :run_cancelled, _payload) do
     run
     |> Map.put(:status, :cancelled)
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :tool_approval_requested, _payload) do
+  defp do_apply_event(%__MODULE__{} = run, :tool_approval_requested, _payload) do
     run
     |> Map.put(:status, :waiting_for_approval)
     |> touch()
   end
 
-  def apply_event(%__MODULE__{} = run, :tool_approval_resolved, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :tool_approval_resolved, payload) do
     cond do
       terminal?(run) ->
         run
@@ -192,7 +200,7 @@ defmodule MrEric.Runs.Run do
     end
   end
 
-  def apply_event(%__MODULE__{} = run, :tool_completed, payload) do
+  defp do_apply_event(%__MODULE__{} = run, :tool_completed, payload) do
     payload
     |> changed_files_from_tool_result()
     |> case do
@@ -206,7 +214,7 @@ defmodule MrEric.Runs.Run do
     end
   end
 
-  def apply_event(%__MODULE__{} = run, _event, _payload), do: run
+  defp do_apply_event(%__MODULE__{} = run, _event, _payload), do: run
 
   def stage(%__MODULE__{stages: stages}, role) do
     Map.get(stages, role, default_stage(nil, nil))
@@ -338,5 +346,13 @@ defmodule MrEric.Runs.Run do
 
   defp new_id do
     "run-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+  end
+
+  defp record_trace(%__MODULE__{} = run, event, payload) do
+    trace =
+      (run.trace || Trace.new(run.id, run.task, run.provider, run.model))
+      |> Trace.record(event, payload)
+
+    %{run | trace: trace}
   end
 end

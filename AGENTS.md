@@ -1,147 +1,94 @@
-This is a web application written using the Phoenix web framework.
+This is a Phoenix LiveView web application for orchestrating AI-agent runs.
 
-## AI Providers (OpenAI-compatible)
+## Core Rules
 
-MrEric uses a single client module (`MrEric.OpenAIClient`) to talk to multiple OpenAI-compatible providers:
+- Respond to users in Japanese.
+- Start answers with the logical conclusion.
+- You may use subagents when they are useful and the task is parallelizable.
+- Do not change more than 3 files at once unless the user has explicitly allowed it.
+- Run `mix precommit` after completing code changes, and fix any issues it reports.
+- Use the included `Req` library for HTTP requests. Do not add `httpoison`, `tesla`, or `httpc`.
+- Never implement ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, scraping, or any workflow that exposes browser/session secrets.
 
-- OpenAI (`AI_PROVIDER=openai`)
-- Grok / xAI (`AI_PROVIDER=grok` or `xai`)
-- OpenRouter (`AI_PROVIDER=openrouter`)
-- Ollama (local) (`AI_PROVIDER=ollama`)
-- LM Studio / LLStudio (local) (`AI_PROVIDER=lmstudio` or `llstudio`)
+## Safety Boundaries
 
-Notes:
+- Never expose API keys, Authorization headers, cookies, raw provider secrets, secret file contents, or process internals in PubSub events, assigns, templates, logs intended for users, traces, eval output, or browser-side JavaScript.
+- File access must stay inside the configured workspace. Reject traversal, absolute paths outside the workspace, protected secret paths, and symlinks that escape the workspace.
+- Protect `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
+- Do not implement `git commit`, `git push`, `git reset`, `git clean`, force push, or destructive automatic rollback inside the app.
+- Real file writes are allowed only through `:apply_patch`, and only after a signed approval request is approved through `MrEric.Tools.Executor.execute_approved/2`.
+- `:shell_command` and `:apply_patch` must always require approval. Do not bypass approval gates.
 
-- All providers are accessed via an OpenAI-compatible endpoint: `/v1/chat/completions`.
+## AI Providers
+
 - Provider implementations live under `MrEric.LLM`; `MrEric.OpenAIClient` is a backward-compatible wrapper.
-- Use `MrEric.OpenAIClient.list_models(provider, opts)` or `MrEric.LLM.OpenAICompat.list_models(provider, opts)` to call `/v1/models`.
-- Request-level `provider:` and `model:` opts should be passed through to the LLM layer.
-- Local providers (Ollama / LM Studio) do not require API keys; base URLs default to:
-  - Ollama: `http://localhost:11434/v1` (override with `OLLAMA_BASE_URL`)
-  - LM Studio: `http://localhost:1234/v1` (override with `LMSTUDIO_BASE_URL`)
-- OpenRouter supports additional optional headers:
-  - `OPENROUTER_SITE_URL` (or `SITE_URL`) → sets `HTTP-Referer`
-  - `OPENROUTER_APP_NAME` → sets `X-Title`
-- In production, `config/runtime.exs` enforces required environment variables based on the selected provider.
+- `MrEric.OpenAIClient` and `MrEric.LLM.OpenAICompat` talk to OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints.
+- Supported provider ids are `openai`, `grok`/`xai`, `openrouter`, `ollama`, and `lmstudio`/`llstudio`.
+- Request-level `provider:` and `model:` opts should pass through to the LLM layer.
+- Local providers default to `http://localhost:11434/v1` for Ollama and `http://localhost:1234/v1` for LM Studio.
+- Production config in `config/runtime.exs` enforces required environment variables for the selected provider.
+- OpenRouter may use `OPENROUTER_SITE_URL`/`SITE_URL` for `HTTP-Referer` and `OPENROUTER_APP_NAME` for `X-Title`.
 
-Quick examples:
+## Runs And Events
 
-```bash
-# OpenAI
-export AI_PROVIDER=openai
-export OPENAI_API_KEY="sk-..."
-
-# Grok (xAI)
-export AI_PROVIDER=grok
-export GROK_API_KEY="..."   # or XAI_API_KEY
-
-# OpenRouter
-export AI_PROVIDER=openrouter
-export OPENROUTER_API_KEY="..."
-export OPENROUTER_SITE_URL="https://your.app"
-export OPENROUTER_APP_NAME="MrEric"
-
-# Local: Ollama
-export AI_PROVIDER=ollama
-export OLLAMA_BASE_URL="http://localhost:11434/v1"   # optional
-
-# Local: LM Studio / LLStudio
-export AI_PROVIDER=lmstudio  # or llstudio
-export LMSTUDIO_BASE_URL="http://localhost:1234/v1"  # optional
-```
-
-Elixir usage remains the same regardless of provider:
-
-```elixir
-# Non-streaming
-MrEric.OpenAIClient.chat_completion("Hello", model: "gpt-4o")
-
-# Streaming
-MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
-
-# Models
-MrEric.OpenAIClient.list_models(:openai, [])
-```
-
-## Phase 4 Runs / realtime orchestration
-
-- `MrEric.Runs.start_run/2` starts one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor` for each user task. Use this path for LiveView realtime execution instead of starting ad-hoc Tasks from the UI.
-- `RunWorker` owns the current Run state, calls `MrEric.Orchestrator.stream(task, self(), opts)` in a separate task, updates stage state from received events, broadcasts sanitized events through PubSub, records completed runs into `MrEric.Agent`, and ignores late chunks after cancellation.
-- Run state is intentionally in-memory GenServer state for Phase 4 because this app currently has no Ecto repo configured. Do not add database persistence unless the surrounding data layer changes.
+- Start realtime execution through `MrEric.Runs.start_run/2`; it creates one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor`.
+- `RunWorker` owns in-memory Run state, calls `MrEric.Orchestrator.stream(task, self(), opts)` in a task, applies events, broadcasts sanitized PubSub events, records completed runs, and ignores late chunks after cancellation.
+- Run state is intentionally in-memory because this app currently has no Ecto repo configured. Do not add persistence unless the surrounding data layer changes.
 - PubSub topics must be named exactly `"runs:#{run_id}"`.
-- Orchestrator stream events must use these shapes:
-  - `{:run_started, %{run_id: run_id, task: task}}`
-  - `{:stage_started, %{run_id: run_id, role: role}}`
-  - `{:stage_chunk, %{run_id: run_id, role: role, chunk: text}}`
-  - `{:stage_completed, %{run_id: run_id, role: role, content: content}}`
-  - `{:stage_failed, %{run_id: run_id, role: role, error: message}}`
-  - `{:run_completed, %{run_id: run_id, final: final}}`
-  - `{:run_failed, %{run_id: run_id, error: message}}`
-  - `{:run_cancelled, %{run_id: run_id}}`
 - Valid UI roles are `:planner`, `:local_drafter`, `:cloud_drafter`, `:critic`, `:reviewer`, and `:synthesizer`. Keep role-specific UI panels stable and addressable by DOM IDs.
-- LiveView should subscribe to only the current Run topic and process all run events in `handle_info/2`. Unsubscribe when switching runs or terminating the LiveView.
-- Never expose API keys, Authorization headers, cookies, or raw provider secrets in PubSub events, assigns, logs intended for users, templates, or browser-side JavaScript.
-- Do not implement ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, or scraping. Use only the configured OpenAI-compatible API providers.
+- LiveView should subscribe only to the current Run topic, process run events in `handle_info/2`, and unsubscribe when switching runs or terminating.
+- Run event names are `:run_started`, `:stage_started`, `:stage_chunk`, `:stage_completed`, `:stage_failed`, `:run_completed`, `:run_failed`, and `:run_cancelled`.
 
-## Phase 5A Tools / approval flow
+## Tools And Patch Flow
 
 - Tool implementations live under `MrEric.Tools` and must implement `MrEric.Tools.Tool`.
 - Built-in tools are registered through `MrEric.Tools.Registry`: `:file_read`, `:file_write_proposal`, `:apply_patch`, `:shell_command`, `:git_status`, and `:git_diff`.
 - All tool execution must go through `MrEric.Tools.Executor`, which calls `MrEric.Tools.Policy` before running a tool.
-- File paths must resolve inside the configured workspace. Reject traversal, absolute paths outside the workspace, protected secret paths, and symlinks that can escape the workspace.
-- Protect likely secret files, including `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
-- `:shell_command` must always require approval. Do not bypass the approval request for shell execution.
-- `:apply_patch` must always require approval. Do not bypass the approval request for file writes.
-- Reject dangerous or mutating shell commands. `:shell_command` should stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, and unlisted commands.
 - `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
-- Do not implement `git commit`, `git push`, `git reset`, `git clean`, or a full Orchestrator tool loop in Phase 5A.
-- Tool PubSub events use the current run topic `"runs:#{run_id}"`:
-  - `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
-  - `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, role: role, reason: reason, risk_level: risk_level}}`
-  - `{:tool_approval_resolved, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, approved: boolean}}`
-  - `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
-  - `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
-  - `{:tool_denied, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
-  - `{:tool_rejected, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
-- Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents through tool events, assigns, templates, logs intended for users, or browser-side JavaScript.
-
-## Phase 6 Patch proposal / apply flow
-
-- Real file writes are only allowed through `:apply_patch`, and only after a signed approval request is approved through `MrEric.Tools.Executor.execute_approved/2`.
-- `:apply_patch` accepts either `%{path: path, patch: unified_diff}` or `%{changes: [%{path: path, before: before, after: after}]}`.
+- `:shell_command` must stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, mutating commands, and unlisted commands.
+- Tool PubSub events use the current run topic and include `:tool_started`, `:tool_approval_requested`, `:tool_approval_resolved`, `:tool_completed`, `:tool_failed`, `:tool_denied`, and `:tool_rejected`.
+- `:apply_patch` accepts `%{path: path, patch: unified_diff}` or `%{changes: [%{path: path, before: before, after: after}]}`.
 - Patch validation must run before approval is requested and again immediately before applying.
 - `MrEric.Tools.PatchValidator` must reject workspace escapes, protected secret paths, symlink escapes, oversized patches, binary files or binary patches, missing update targets, stale `before` content, deletion patches, and disallowed create-file extensions.
-- All paths must resolve inside the configured workspace through `MrEric.Tools.Policy`; never write absolute paths outside the workspace.
-- Protected files include `.env*`, private keys, `.pem`/`.key` files, credential/token/secret paths, `.git`, and `.ssh`.
 - LiveView must show pending patch approvals with target file, summary, unified diff, risk level, Approve, and Reject controls.
 - After approval and apply, show the resulting `git diff` and record changed file paths in Run history.
-- Rollback for Phase 6 is manual: users inspect the displayed `git diff` and revert through the Codex diff pane. Do not implement `git reset --hard`, `git clean -fd`, force push, or destructive automatic rollback.
-- Never expose API keys, Authorization headers, cookies, raw provider secrets, or secret file contents in patch approval UI, PubSub events, logs intended for users, or browser-side JavaScript.
+- Rollback is manual: users inspect the displayed `git diff` and revert through the Codex diff pane.
 
-## Phase 5B RAG / MCP extension
-
-- RAG implementations live under `MrEric.RAG`: `Chunker`, `Index`, `Retriever`, and the public `MrEric.RAG.context_for/2`.
-- RAG must only index safe text files inside the configured workspace. Reuse `MrEric.Tools.Policy` path resolution so traversal, workspace-external absolute paths, protected secret paths, and escaping symlinks stay blocked.
-- RAG is in-memory and lexical for Phase 5B. Do not add a vector DB or make embeddings mandatory unless the data layer and product scope change.
-- `MrEric.Orchestrator` may pass RAG context to the planner prompt, but RAG failures must not fail the whole run.
-- MCP extension points live under `MrEric.MCP`: `ClientBehaviour` and `ToolAdapter`.
-- Phase 5B defines the MCP interface only. Do not add real external MCP server connections without keeping tool execution behind `MrEric.Tools.Executor`, `MrEric.Tools.Policy`, and approval events.
-- `RunWorker` may send internal `{:tool_result, ...}` replies to a trusted `reply_to` pid from a tool call payload. Never broadcast `reply_to` or other process internals through PubSub.
-- Continue to forbid unapproved file edits and unapproved git operations.
-
-## Phase 5C Orchestrator tool loop
+## Orchestrator Tool Loop
 
 - `MrEric.Orchestrator.stream/3` may let `:planner`, `:critic`, and `:reviewer` request tools. Keep draft and synthesizer stages focused on text generation unless product scope changes.
 - Tool requests must be emitted internally as `{:tool_requested, %{run_id: run_id, role: role, tool_name: tool_name, input: input, reason: reason, tool_call_id: id, reply_to: pid}}`.
 - `RunWorker` is the only broker that calls `MrEric.Tools.Executor.request_tool/4`; Orchestrator must not bypass RunWorker, Registry, Policy, or approval events.
 - `RunWorker` must set Run status to `:waiting_for_approval` while an approval request is pending, then return to running after approval resolution.
 - Approved tools execute through the signed approval request only. Rejected approvals return an internal `{:tool_result, %{status: :rejected, error: reason}}`; Policy-denied tools return `status: :denied`.
-- Orchestrator must append tool results back into the next LLM prompt before continuing the same stage. Keep tool output bounded and do not expose `reply_to` or process internals.
-- OpenAI-compatible responses may include `choices[0].message.tool_calls`; parse only `id`, `function.name`, and JSON `function.arguments`. Invalid JSON must become a safe error result, not a crash.
+- Orchestrator must append bounded tool results back into the next LLM prompt before continuing the same stage.
+- OpenAI-compatible responses may include `choices[0].message.tool_calls`; parse only `id`, `function.name`, and JSON `function.arguments`.
 - Local/non-tool-calling LLMs may request a tool only when the entire assistant message is a JSON object shaped like `%{"tool" => name, "input" => map, "reason" => text}`. Do not scrape arbitrary prose for executable JSON.
-- Enforce tool loop limits: `max_tool_calls_per_run`, `max_tool_calls_per_role`, `max_total_runtime_ms`, `max_context_chars`, and `max_tool_output_chars`. If a limit is hit, stop requesting tools and continue with current information.
-- Planner should receive bounded `MrEric.RAG.context_for/2` context before its first model call. RAG failure must not fail the run.
-- Continue to forbid ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, scraping, unapproved shell execution, unapproved file writes, destructive git commands, and force pushes.
+- Enforce `max_tool_calls_per_run`, `max_tool_calls_per_role`, `max_total_runtime_ms`, `max_context_chars`, and `max_tool_output_chars`.
+
+## RAG And MCP Boundaries
+
+- Basic RAG lives under `MrEric.RAG`: `Chunker`, `Index`, `Retriever`, and `context_for/2`.
+- RAG must only index safe text files inside the workspace and must reuse `MrEric.Tools.Policy` path resolution.
+- RAG is in-memory and lexical. Do not add vector DBs, mandatory embeddings, hybrid search, metadata indexing, or RAG status UI unless explicitly scoped.
+- Planner may receive bounded `MrEric.RAG.context_for/2` context before its first model call. RAG failure must not fail the whole run.
+- MCP extension points live under `MrEric.MCP.ClientBehaviour` and `MrEric.MCP.ToolAdapter`.
+- Current MCP support is interface-level only. Do not add MCP server config, external MCP process startup, external tool discovery, MCP registry, MCP proxy, or MCP UI unless explicitly scoped.
+- `RunWorker` may send internal `{:tool_result, ...}` replies to a trusted `reply_to` pid from a tool call payload. Never broadcast `reply_to`.
+
+## Phase 9 Evals
+
+- Phase 9 is a measurement and safety layer for the Phase 1-6 agent harness. Do not implement Phase 7-style advanced RAG features or Phase 8-style real MCP connectivity as part of Phase 9.
+- Use `MrEric.LLM.FakeProvider` for deterministic tests and evals. It must never call external APIs, local model servers, ChatGPT Web UI, cookies, scraping, or MCP servers.
+- Fake provider scenarios and scripts must be deterministic: same prompt plus same opts must produce the same response, tool call, error, or stream chunks.
+- Golden eval cases live in `priv/evals/phase9_golden_cases.json`. Add cases with name, task, scenario, expected status/events/final substrings, approval action, optional requirements, and secret leak expectation.
+- `mix mr_eric.evals` must run only against the fake provider. Do not add tests that require real OpenAI, OpenRouter, Grok, Ollama, LM Studio, or external MCP servers.
+- Run trace is stored through `MrEric.Runs.Trace` from sanitized RunWorker/PubSub events. Trace output must pass redaction before UI, logs intended for users, eval output, or test diagnostics.
+- Use `MrEric.Errors` for error classification and safe user-facing messages. Error text may contain provider secrets, so redact before exposing or storing it.
+- Use `MrEric.Evals.SecretChecker` for final output, drafts, reviews, run trace, tool output, patch proposal/result, audit-like output, and testable LiveView render output.
+- RAG evals are optional and run only when `MrEric.RAG.context_for/2` exists.
+- MCP evals are optional and run only when Phase 5B MCP interface modules exist.
+- Never use real API keys in tests. Use dummy secrets only, and never print the dummy secret value in failure messages when leak detection reports a hit.
 
 ## Project guidelines
 

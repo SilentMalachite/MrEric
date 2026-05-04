@@ -1,105 +1,65 @@
 # MrEric
 
-Phoenix LiveView を用いた AI エージェントアプリケーションです。OpenAI/Grok/OpenRouter、さらにローカル LLM（Ollama/LM Studio）の OpenAI 互換 API を活用し、自然言語でタスクを実行できます。
+Phoenix LiveView を用いた AI エージェントアプリケーションです。OpenAI/Grok/OpenRouter と、Ollama/LM Studio などのローカル LLM を OpenAI 互換 API として扱い、Planner、Draft Agents、Reviewer、Synthesizer によるタスク実行をリアルタイムに表示します。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Elixir](https://img.shields.io/badge/elixir-1.17-purple.svg)](https://elixir-lang.org)
 [![Phoenix](https://img.shields.io/badge/phoenix-1.8-orange.svg)](https://www.phoenixframework.org)
 
-## 📋 目次
+## 目次
 
-- [✨ 特徴](#-特徴)
-- [📦 必要要件](#-必要要件)
-- [🚀 セットアップ](#-セットアップ)
-- [🔁 AIプロバイダの切替](#-aiプロバイダの切替)
-- [💡 使い方](#-使い方)
-- [🤖 OpenAI モデル設定](#-openai-モデル設定)
-- [🛠️ 開発](#️-開発)
-- [🧪 テスト](#-テスト)
-- [🏗️ アーキテクチャ](#️-アーキテクチャ)
-- [🚢 デプロイ](#-デプロイ)
-- [🔧 トラブルシュート](#-トラブルシュート)
-- [📝 ライセンス](#-ライセンス)
+- [特徴](#特徴)
+- [必要要件](#必要要件)
+- [クイックスタート](#クイックスタート)
+- [AI プロバイダ](#ai-プロバイダ)
+- [使い方](#使い方)
+- [安全なツール実行](#安全なツール実行)
+- [Deterministic Evals](#deterministic-evals)
+- [開発とテスト](#開発とテスト)
+- [アーキテクチャ](#アーキテクチャ)
+- [デプロイ](#デプロイ)
+- [トラブルシュート](#トラブルシュート)
+- [ライセンス](#ライセンス)
 
-## ✨ 特徴
+## 特徴
 
-- **Phoenix 1.8 + LiveView 1.1** - リアルタイム Web UI
-- **OpenAI API 統合** - GPT-4o、GPT-4、GPT-3.5、O1 全モデル対応
-- **ストリーミング応答** - リアルタイムでAI応答を表示
-- **Phase 4 リアルタイム実行UI** - Planner、Draft Agents、Reviewer、Synthesizer の進捗を段階表示
-- **Phase 5A ツール基盤** - workspace限定のツール実行、承認フロー、PubSub tool events
-- **Phase 5B RAG / MCP 拡張面** - プロジェクト内ファイルのchunk検索、planner context注入、MCP adapter interface
-- **Phase 6 安全な patch apply** - patch proposal をLiveViewで確認し、承認後だけ実ファイルへ適用
-- **実行キャンセル** - 実行中 Run をUIから停止し、以降のchunkを無視
-- **GUIモデル選択** - 7つのOpenAIモデルから簡単に選択
-- **実行履歴管理** - タスク実行履歴を自動保存・表示
-- **モダンUI** - Tailwind CSS v4 + Hero Icons
-- **高速HTTPサーバ** - Bandit による高パフォーマンス
-- **型安全HTTP通信** - Req ライブラリ採用
+- **リアルタイム Run UI**: Planner、Local Drafter、Cloud Drafter、Critic、Reviewer、Synthesizer の進捗を LiveView で段階表示
+- **OpenAI 互換 provider 対応**: OpenAI、Grok/xAI、OpenRouter、Ollama、LM Studio を同じ LLM 層で利用
+- **安全な tool / patch flow**: workspace 境界、secret file 保護、承認必須 tool、承認後だけの `apply_patch`
+- **軽量 RAG / MCP extension point**: workspace 内テキスト検索と MCP adapter interface。外部 MCP 接続は未実装
+- **Deterministic eval harness**: Fake LLM provider、golden eval cases、Run trace、error classification、secret leak check
+- **実行キャンセルと履歴**: 実行中 Run を停止し、完了 Run を履歴へ保存
+- **Phoenix 1.8 + LiveView 1.1**: Tailwind CSS v4、daisyUI、Bandit、Req を利用
 
-## 📦 必要要件
+## 必要要件
 
-- **Elixir** 1.17 以上
-- **Erlang/OTP** 25 以上
-- **Node.js** 18 以上 (アセットビルド用)
-- 以下のいずれかの API キー（利用するプロバイダに応じて）
-  - OpenAI: OPENAI_API_KEY（[取得方法](https://platform.openai.com/api-keys)）
-  - Grok(xAI): GROK_API_KEY または XAI_API_KEY
-  - OpenRouter: OPENROUTER_API_KEY（[OpenRouter](https://openrouter.ai/)）
-  - ローカル LLM（Ollama/LM Studio）はキー不要
+- Elixir 1.17 以上
+- Erlang/OTP 25 以上
+- Node.js 18 以上
+- 利用する外部 provider に応じた API key
 
-## 🚀 セットアップ
+ローカル LLM provider の Ollama / LM Studio は API key なしで利用できます。
 
-### 1. リポジトリのクローン
+## クイックスタート
 
 ```bash
 git clone https://github.com/SilentMalachite/MrEric.git
 cd MrEric
 ```
 
-### 2. 環境変数の設定
-
-利用する AI プロバイダに応じて環境変数を設定します（未設定時は `openai` が既定）。
-
-例）OpenAI を利用する場合：
+利用する provider を選び、必要な環境変数を設定します。
 
 ```bash
+# OpenAI
 export AI_PROVIDER=openai
-export OPENAI_API_KEY="sk-your-api-key-here"
-```
+export OPENAI_API_KEY="sk-your-api-key"
 
-例）Grok(xAI) を利用する場合：
-
-```bash
-export AI_PROVIDER=grok   # または xai
-export GROK_API_KEY="your-grok-key"   # または XAI_API_KEY
-```
-
-例）OpenRouter を利用する場合：
-
-```bash
-export AI_PROVIDER=openrouter
-export OPENROUTER_API_KEY="your-openrouter-key"
-# 任意（推奨）: OpenRouter のポリシーに基づくヘッダ
-export OPENROUTER_SITE_URL="https://your.app"   # または SITE_URL
-export OPENROUTER_APP_NAME="MrEric"
-```
-
-例）ローカル LLM（Ollama / LM Studio）を利用する場合：
-
-```bash
-# Ollama
+# ローカル LLM: Ollama
 export AI_PROVIDER=ollama
-# 任意: ベースURLの上書き
 export OLLAMA_BASE_URL="http://localhost:11434/v1"
-
-# LM Studio（LLStudio）
-export AI_PROVIDER=lmstudio   # または llstudio
-# 任意: ベースURLの上書き
-export LMSTUDIO_BASE_URL="http://localhost:1234/v1"
 ```
 
-### 3. 依存関係のインストールと起動
+依存関係を入れてサーバを起動します。
 
 ```bash
 mix setup
@@ -108,196 +68,85 @@ mix phx.server
 
 ブラウザで [http://localhost:4000](http://localhost:4000) を開きます。
 
-## 💡 使い方
+## AI プロバイダ
+
+MrEric は `MrEric.LLM.OpenAICompat` を通じて、OpenAI 互換の `/v1/chat/completions` と `/v1/models` を呼び出します。`MrEric.OpenAIClient` は後方互換 wrapper です。
+
+| Provider | `AI_PROVIDER` | 必須環境変数 | 既定 base URL |
+|----------|---------------|--------------|---------------|
+| OpenAI | `openai` | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
+| Grok / xAI | `grok` / `xai` | `GROK_API_KEY` または `XAI_API_KEY` | `https://api.x.ai/v1` |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
+| Ollama | `ollama` | なし | `http://localhost:11434/v1` |
+| LM Studio | `lmstudio` / `llstudio` | なし | `http://localhost:1234/v1` |
+
+OpenRouter では任意で `OPENROUTER_SITE_URL` または `SITE_URL`、`OPENROUTER_APP_NAME` を設定できます。本番環境では `config/runtime.exs` が provider ごとの必須環境変数を検証します。
+
+リクエスト単位でも provider と model を指定できます。
+
+```elixir
+MrEric.OpenAIClient.chat_completion("Hello", provider: :ollama, model: "llama3.1")
+MrEric.OpenAIClient.list_models(:openai, [])
+```
+
+## 使い方
 
 ### Web UI
 
-1. ブラウザで `http://localhost:4000` にアクセス
-2. **Provider** と **Model** ドロップダウンから利用するAIを選択
-3. **Task Description** にタスクを入力（例: "Create a simple Phoenix controller"）
-4. **Execute Task** ボタンをクリック
-5. Run ID、全体ステータス、roleごとの進捗パネルを確認
-6. 必要に応じて **Cancel** ボタンで実行中 Run を停止
-7. 完了した実行は履歴へ保存されます
+1. `http://localhost:4000` を開く
+2. Provider と Model を選ぶ
+3. Task Description にタスクを入力する
+4. Execute Task を押す
+5. Run ID、全体ステータス、role ごとの進捗、tool approval、patch approval を確認する
+6. 必要なら Cancel で実行中 Run を停止する
 
-### プログラムからの利用
+### Elixir API
 
 ```elixir
-# タスクの実行
+# タスク実行
 {:ok, result} = MrEric.execute_task("Create a simple Phoenix controller")
 
-# 実行履歴の取得
+# 履歴
 history = MrEric.get_task_history()
-
-# 最新のタスクを取得
 latest = MrEric.get_latest_task()
 
-# OpenAI API の直接呼び出し
-response = MrEric.OpenAIClient.chat_completion("Hello, AI!", model: "gpt-4")
-
-# プロバイダをリクエスト単位で指定
-response = MrEric.OpenAIClient.chat_completion("Hello", provider: :ollama, model: "llama3")
-
-# OpenAI 互換 /v1/models の取得
-{:ok, models} = MrEric.OpenAIClient.list_models(:openai, [])
-
-# ストリーミング応答
-MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
-receive do
-  {:chunk, text} -> IO.write(text)
-  {:complete, :ok} -> IO.puts("\nDone!")
-end
-
-# Phase 4 Run の開始・購読・キャンセル
+# Run 開始、購読、キャンセル
 {:ok, run} = MrEric.Runs.start_run("Build a feature", provider: :ollama, model: "llama3.1")
 MrEric.Runs.subscribe(run.id)
 MrEric.Runs.cancel_run(run.id)
 
-# Phase 5A Tool Executor
-MrEric.Tools.Executor.execute(:file_read, %{path: "README.md"})
-MrEric.Tools.Executor.execute(:git_status, %{})
+# Streaming completion
+MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
 
-# shell_command は必ず承認リクエストを返します
-{:approval_required, request} =
-  MrEric.Tools.Executor.execute(:shell_command, %{command: "pwd"})
-
-MrEric.Tools.Executor.execute_approved(request)
-
-# Phase 6 apply_patch は必ず承認リクエストを返し、承認後だけ実ファイルを変更します
-{:approval_required, patch_request} =
-  MrEric.Tools.Executor.execute(:apply_patch, %{
-    changes: [
-      %{path: "README.md", before: "old text\n", after: "new text\n"}
-    ]
-  })
-
-MrEric.Tools.Executor.execute_approved(patch_request)
-
-# Phase 5B RAG
-{:ok, context} = MrEric.RAG.context_for("How does tool approval work?", workspace_root: File.cwd!())
-{:ok, index} = MrEric.RAG.Index.build(workspace_root: File.cwd!())
-MrEric.RAG.Retriever.search(index, "approval policy", top_k: 3)
+receive do
+  {:chunk, text} -> IO.write(text)
+  {:complete, :ok} -> IO.puts("\nDone!")
+end
 ```
 
-## 🧭 Phase 4 リアルタイム実行UI
+## 安全なツール実行
 
-Phase 4 では、1つのタスク実行を **Run** として扱います。Run は `MrEric.Runs.RunWorker` が所有し、Planner、Local Drafter、Cloud Drafter、Critic、Reviewer、Synthesizer の stage 状態を GenServer state として保持します。
-
-このプロジェクトは現在 `ecto_repos: []` でDB永続化を使っていないため、Run の進行中状態はDBではなく `RunWorker` のメモリ上に保持します。完了した Run は既存の `MrEric.Agent` 履歴へコピーされ、LiveView の履歴に表示されます。
-
-### PubSub stage event
-
-RunWorker は Phoenix PubSub の topic `"runs:#{run_id}"` に統一形式のイベントを配信します。
-
-- `{:run_started, %{run_id: run_id, task: task}}`
-- `{:stage_started, %{run_id: run_id, role: :planner}}`
-- `{:stage_chunk, %{run_id: run_id, role: :planner, chunk: text}}`
-- `{:stage_completed, %{run_id: run_id, role: :planner, content: content}}`
-- `{:stage_failed, %{run_id: run_id, role: :cloud_drafter, error: message}}`
-- `{:run_completed, %{run_id: run_id, final: final}}`
-- `{:run_failed, %{run_id: run_id, error: message}}`
-- `{:run_cancelled, %{run_id: run_id}}`
-
-LiveView は現在の Run topic を subscribe し、`handle_info/2` で受信したイベントを `MrEric.Runs.Run` に反映して画面を更新します。APIキーや認証ヘッダはイベントにも画面にも出しません。
-
-### RunWorker / RunSupervisor
-
-- `MrEric.Runs.start_run/2` は1 Runにつき1つの `RunWorker` を `DynamicSupervisor` 配下で起動します。
-- `RunWorker` は `MrEric.Orchestrator.stream/3` を別Taskで実行し、stage eventを受け取って状態更新とPubSub配信を行います。
-- `Orchestrator.stream/3` は draft/review 系を `Task.async_stream/3` で並列化し、一部roleが失敗しても他の出力と失敗情報を Synthesizer に渡します。
-
-### キャンセル仕様
-
-UIの **Cancel** は `MrEric.Runs.cancel_run(run_id)` を呼びます。RunWorker は orchestration task を停止し、Run status を `:cancelled` に更新して `{:run_cancelled, ...}` を配信します。すでに外部HTTPリクエストがプロバイダ側へ到達している場合、プロバイダ側の処理完了までは保証できませんが、キャンセル後に届いたchunkや完了通知はRunWorker側で無視され、UIへ流れません。
-
-## 🧰 Phase 5A ツール実行と承認
-
-Phase 5A は、将来の Orchestrator tool loop に向けた安全なツール基盤です。Phase 5A 時点では本格的な tool loop、実ファイル書き込み、`git commit/push/reset/clean` は実装していません。
-
-### 構成
-
-- `MrEric.Tools.Tool` - built-in tool の behaviour
-- `MrEric.Tools.Registry` - `file_read`、`file_write_proposal`、`apply_patch`、`shell_command`、`git_status`、`git_diff` の登録
-- `MrEric.Tools.Policy` - workspace境界、秘密情報ファイル、危険コマンド、承認要否を判定
-- `MrEric.Tools.Executor` - registry/policy を通してツールを実行
-
-### Built-in tools
+すべての tool 実行は `MrEric.Tools.Executor` から `Registry` と `Policy` を通ります。ファイルパスは workspace 内に限定され、`.env*`、秘密鍵、credential/token/secret を含むパス、`.git`、`.ssh` は保護されます。
 
 | Tool | 説明 | 承認 |
 |------|------|------|
-| `file_read` | workspace内ファイルを読み取り | 不要 |
-| `file_write_proposal` | 書き込み提案とdiffを返す。実ファイルは変更しない | 不要 |
-| `apply_patch` | 承認済みpatchをworkspace内ファイルへ適用し、git diffを返す | 必須 |
-| `shell_command` | workspace root でshell commandを実行 | 必須 |
+| `file_read` | workspace 内ファイルを読み取り | 不要 |
+| `file_write_proposal` | 書き込み提案と diff を返す。実ファイルは変更しない | 不要 |
+| `apply_patch` | 承認済み patch を workspace 内ファイルへ適用し、git diff を返す | 必須 |
+| `shell_command` | read-oriented allowlist の shell command を実行 | 必須 |
 | `git_status` | `git status --short` を実行 | 不要 |
 | `git_diff` | `git diff` を実行 | 不要 |
 
-### PubSub tool events
+`shell_command` は shell 展開、リダイレクト、破壊的コマンド、mutating git subcommand を拒否します。`git commit`、`git push`、`git reset`、`git clean`、force push は実装していません。
 
-Tool events も Run topic `"runs:#{run_id}"` に配信されます。
+### Orchestrator tool loop
 
-- `{:tool_started, %{run_id: run_id, tool_call_id: id, tool: tool, args: args}}`
-- `{:tool_approval_requested, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, args: args, role: role, reason: reason, risk_level: risk_level}}`
-- `{:tool_approval_resolved, %{run_id: run_id, approval_id: approval_id, tool_call_id: id, tool: tool, approved: boolean}}`
-- `{:tool_completed, %{run_id: run_id, tool_call_id: id, tool: tool, result: result}}`
-- `{:tool_failed, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
-- `{:tool_denied, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
-- `{:tool_rejected, %{run_id: run_id, tool_call_id: id, tool: tool, error: message}}`
+`MrEric.Orchestrator.stream/3` では Planner / Critic / Reviewer が tool request を出せます。RunWorker が唯一の broker として `Executor.request_tool/4` を呼び、承認が必要な場合は Run status を `:waiting_for_approval` にします。
 
-LiveView は pending approval を `#tool-approval-<tool_call_id>` として表示し、Approve/Deny ボタンから `MrEric.Runs.approve_tool/2` / `MrEric.Runs.deny_tool/2` を呼びます。
+対応する tool call は次の 2 形式です。
 
-### セキュリティ境界
-
-- すべてのファイルパスは workspace 内に限定します。
-- `.env`、秘密鍵、credential/token/secret を含むファイル、`.git`、`.ssh` は保護対象です。
-- workspace外へ逃げるシンボリックリンクは拒否します。
-- `shell_command` は必ず承認が必要です。
-- `shell_command` は読取系 allowlist と read-only git subcommand に限定し、shell展開・リダイレクト・破壊的/書き込み系コマンドは拒否します。
-- APIキー、Authorization、Cookie、token、secret は PubSub payload と UI 表示前に redaction されます。
-
-## 🔎 Phase 5B RAG / MCP 拡張
-
-Phase 5B は、既存の安全な Phase 5A tool policy を壊さずに、プロジェクト内ファイルを参照する RAG と MCP 拡張用 interface を追加します。外部 MCP サーバへの本格接続、ベクトルDB、必須 embeddings、無承認のファイル編集や git 操作はまだ行いません。
-
-### RAG
-
-- `MrEric.RAG.Chunker` - UTF-8 テキストを stable id、path、line range 付き chunk に分割
-- `MrEric.RAG.Index` - workspace 内の安全なテキストファイルだけを走査して in-memory index を構築
-- `MrEric.RAG.Retriever` - lexical overlap による lightweight 検索
-- `MrEric.RAG.context_for/2` - planner に渡せる `"Project context"` 文字列を返す facade
-
-`MrEric.Orchestrator` は planner 実行前に RAG context を取得し、空でなければ planner prompt へ差し込みます。RAG が失敗しても例外は握りつぶされ、Run 全体は従来どおり続行します。テストや明示制御では `rag_context: "..."`、`rag_enabled: false`、`rag_module: MyRAG`、`rag_index: index` などの opts を使えます。
-
-### MCP
-
-- `MrEric.MCP.ClientBehaviour` - 将来の MCP client 実装用 behaviour
-- `MrEric.MCP.ToolAdapter` - MCP tool descriptor を `mcp:<tool_name>` 形式の tool-like schema に正規化し、client の `call_tool/3` を安全に呼び出す adapter
-
-Phase 5B の MCP は interface までです。外部プロセス、外部ネットワーク、書き込み系ツールを接続する場合は、既存の `MrEric.Tools.Policy` と承認イベントを通す設計を維持してください。
-
-### Tool result integration
-
-`RunWorker` は既存の PubSub tool events に加えて、内部 payload に `reply_to: pid` が含まれている場合だけ `{:tool_result, %{tool_call_id:, tool:, status:, result: | error:}}` をその pid へ返します。この `reply_to` は PubSub へ公開されません。
-
-## 🔁 Phase 5C Orchestrator Tool Loop
-
-Phase 5C では、Phase 5A/5B の Tool Policy、Approval Gate、RAG を実際の `MrEric.Orchestrator.stream/3` に接続しています。完全自律実行ではなく、危険な操作は必ず「提案 → 承認 → 実行 → 結果表示」の流れを通ります。
-
-### 実行フロー
-
-1. Planner / Critic / Reviewer が必要に応じて tool request を出します。
-2. Orchestrator は OpenAI互換 `tool_calls` またはローカルLLM向けの内部JSON形式を検出し、`{:tool_requested, ...}` を RunWorker へ送ります。
-3. RunWorker は `MrEric.Tools.Executor.request_tool/4` を呼び、必ず `Registry` と `Policy` を通します。
-4. allow の場合は即実行し、`{:tool_result, %{status: :completed, result: ...}}` を Orchestrator へ返します。
-5. approval_required の場合は Run status を `:waiting_for_approval` にし、LiveView に tool name / role / reason / risk_level / input preview と Approve / Deny を表示します。
-6. Approve 後は承認済み request だけを実行し、結果を Orchestrator へ返して run を継続します。
-7. Deny または Policy deny の場合も rejected/denied result を Orchestrator へ返し、run は破綻せず現在の情報で続行します。
-
-### 対応する tool call 形式
-
-OpenAI互換プロバイダでは `choices[0].message.tool_calls` の `id`、`function.name`、`function.arguments` を読み取ります。`arguments` は JSON として parse し、失敗時は安全な error result として扱います。
-
-ローカルLLMでは、本文全体が次のような JSON object の場合だけ tool request とみなします。任意の文章から危険なJSONを抜き出して実行することはありません。
+- OpenAI 互換 `choices[0].message.tool_calls`
+- ローカル LLM 向けの本文全体 JSON:
 
 ```json
 {
@@ -307,461 +156,245 @@ OpenAI互換プロバイダでは `choices[0].message.tool_calls` の `id`、`fu
 }
 ```
 
-### 上限
+任意の文章から JSON を抜き出して実行することはありません。tool loop には `max_tool_calls_per_run`、`max_tool_calls_per_role`、`max_total_runtime_ms`、`max_context_chars`、`max_tool_output_chars` の上限があります。
 
-tool loop には無限ループ防止の上限があります。
+### Patch proposal / apply
 
-| Option | Default |
-|--------|---------|
-| `max_tool_calls_per_run` | `8` |
-| `max_tool_calls_per_role` | `3` |
-| `max_total_runtime_ms` | `180_000` |
-| `max_context_chars` | `20_000` |
-| `max_tool_output_chars` | `8_000` |
-
-上限を超えた場合、それ以上 tool を呼ばず、現在までの stage content と tool result で synthesizer へ進みます。
-
-### RAG統合
-
-Planner 開始前に `MrEric.RAG.context_for/2` を呼び、取得できた context を planner prompt に追加します。RAG context は `max_context_chars` で制限され、RAG 失敗は run 全体を失敗させません。RAG は Phase 5B と同じく workspace 内の安全なテキストファイルだけを扱い、secret file は index しません。
-
-### 安全性
-
-- `shell_command` は常に承認必須です。
-- 実ファイル書き込みは `apply_patch` だけが行い、必ず LiveView の承認後に実行されます。`file_write_proposal` は提案と diff のみです。
-- `git commit`、`git push`、`git reset`、`git clean`、force push は実装していません。
-- APIキー、Authorization、Cookie、token、secret は PubSub と LiveView 表示前に redaction されます。
-- ChatGPT Pro ログイン、ChatGPT Web UI 自動操作、Cookie 流用、スクレイピングは実装していません。
-
-## 🧩 Phase 6 Patch proposal / apply flow
-
-Phase 6 では、AI が直接ファイルを書き換えるのではなく、`apply_patch` tool が次の安全な編集フローを通します。
-
-1. Planner / Critic / Reviewer が patch proposal を作ります。
-2. `MrEric.Tools.Policy` と `MrEric.Tools.PatchValidator` が workspace境界、secret file、patchサイズ、binary file、before一致、削除禁止を検証します。
-3. LiveView は pending patch approval として対象ファイル、変更概要、unified diff、risk level、Approve / Deny を表示します。
-4. Approve 後だけ `MrEric.Tools.Executor.execute_approved/2` が `apply_patch` を実行し、実ファイルへ反映します。
-5. 適用後の `git diff` と変更ファイル一覧を tool result と Run history に表示します。
-6. Deny した場合、ファイルは変更されず、run は rejected tool result を受け取って継続できます。
-
-### apply_patch 入力
-
-`changes` 形式では、現在内容 `before` と提案内容 `after` を明示します。`before` が現在のファイル内容と一致しない場合は、同時編集によるズレとして拒否します。
+実ファイルへの書き込みは `apply_patch` だけが行い、必ず承認後に実行されます。validation は承認前と適用直前の 2 回走ります。
 
 ```elixir
-%{
-  changes: [
-    %{path: "lib/mr_eric/orchestrator.ex", before: old_content, after: new_content}
-  ]
-}
+{:approval_required, request} =
+  MrEric.Tools.Executor.execute(:apply_patch, %{
+    changes: [
+      %{path: "README.md", before: "old text\n", after: "new text\n"}
+    ]
+  })
+
+MrEric.Tools.Executor.execute_approved(request)
 ```
 
-unified diff 形式も利用できます。
+`apply_patch` は unified diff 形式も受け付けます。削除 patch、binary patch、workspace 外、secret path、stale `before`、サイズ超過、許可されていない新規拡張子は拒否されます。rollback は手動で、表示された `git diff` を確認して Codex diff pane から revert します。
+
+## RAG / MCP extension
+
+`MrEric.RAG` は workspace 内の安全なテキストファイルだけを対象にした in-memory lexical RAG です。`Chunker`、`Index`、`Retriever`、`context_for/2` を提供し、Planner prompt に bounded context を追加できます。RAG が失敗しても Run 全体は失敗しません。
 
 ```elixir
-%{
-  path: "lib/mr_eric/orchestrator.ex",
-  patch: "--- a/lib/mr_eric/orchestrator.ex\n+++ b/lib/mr_eric/orchestrator.ex\n..."
-}
+{:ok, context} = MrEric.RAG.context_for("How does tool approval work?", workspace_root: File.cwd!())
+{:ok, index} = MrEric.RAG.Index.build(workspace_root: File.cwd!())
+MrEric.RAG.Retriever.search(index, "approval policy", top_k: 3)
 ```
 
-### 禁止される patch
+`MrEric.MCP` は `ClientBehaviour` と `ToolAdapter` の extension point までです。外部 MCP server config、外部プロセス起動、MCP tool discovery、MCP UI は未実装です。
 
-- workspace外、または workspace外へ逃げる symlink 配下への変更
-- `.env*`、秘密鍵、`.pem`、`.key`、credential/token/secret を含むパス、`.git`、`.ssh`
-- binary file、binary patch、NUL byte を含む patch
-- 最大サイズを超える patch
-- 現在内容と `before` が一致しない patch
-- このフェーズでの削除 patch
-- 新規作成時に許可されていない拡張子のファイル
+## Deterministic Evals
 
-### rollback 仕様
+Phase 9 は、外部 LLM/API を呼ばずに Orchestrator、RunWorker、Tools、approval flow、patch flow を評価する基盤です。Phase 7 の高度な RAG や Phase 8 の本格 MCP 接続は前提にしていません。
 
-Phase 6 の rollback は B案です。`apply_patch` 適用後に表示される `git diff` を確認し、必要であれば Codex アプリ側の diff pane から対象ファイルを revert してください。MrEric 自体は `git reset --hard`、`git clean`、force push、破壊的な自動 rollback は実装しません。
-
-CLI で確認する場合は、workspace root で次を実行します。
+- `MrEric.LLM.FakeProvider` - deterministic な provider。外部通信なし
+- `priv/evals/phase9_golden_cases.json` - golden eval cases
+- `MrEric.Runs.Trace` - sanitized Run trace
+- `MrEric.Errors` - error classification と safe message
+- `MrEric.Evals.SecretChecker` - API key、Bearer token、private key、password/token 系漏洩の検出
 
 ```bash
-git diff
-git diff -- path/to/file
+# 全 golden eval
+mix mr_eric.evals
+
+# 単一 case
+mix mr_eric.evals --case simple_planning
 ```
 
-## 🔁 AIプロバイダの切替
+RAG/MCP 関連 eval は、対応する module が存在する場合だけ実行されます。Fake provider は通常 UI の provider list には表示されず、テストや eval で `provider_module: MrEric.LLM.FakeProvider` と明示して使います。
 
-MrEric は OpenAI 互換の `/v1/chat/completions` を提供する複数プロバイダに対応しています。プロバイダの選択は環境変数または `config` で行えます。
-
-- 環境変数: `AI_PROVIDER` に `openai | grok | xai | openrouter | ollama | lmstudio | llstudio`
-- 設定ファイル: `config :mr_eric, :ai_provider, "openai"`
-
-プロバイダ別の要点:
-
-- OpenAI: `OPENAI_API_KEY` 必須（本番では未設定時に起動失敗）
-- Grok(xAI): `GROK_API_KEY` または `XAI_API_KEY` のいずれか必須
-- OpenRouter: `OPENROUTER_API_KEY` 必須。任意ヘッダ `OPENROUTER_SITE_URL`（または `SITE_URL`）、`OPENROUTER_APP_NAME`
-- Ollama: APIキー不要。デフォルト `http://localhost:11434/v1`（`OLLAMA_BASE_URL` で上書き可）
-- LM Studio: APIキー不要。デフォルト `http://localhost:1234/v1`（`LMSTUDIO_BASE_URL` で上書き可）
-
-備考: 本番環境では `config/runtime.exs` にて、選択したプロバイダに応じた必須変数が未設定の場合は起動が失敗するようガードしています。
-
-## 🤖 OpenAI モデル設定
-
-### デフォルトモデルの変更
-
-`config/config.exs` でデフォルトモデルを設定できます：
-
-```elixir
-config :mr_eric,
-  openai_model: "gpt-4o"  # デフォルト
-```
-
-### 利用可能なモデル
-
-| モデル | ID | 推奨用途 |
-|--------|---|----------|
-| GPT-4o | `gpt-4o` | 最新・高性能（推奨） |
-| GPT-4o Mini | `gpt-4o-mini` | 高速・コスト効率 |
-| GPT-4 Turbo | `gpt-4-turbo` | 高性能・長文対応 |
-| GPT-4 | `gpt-4` | 高精度タスク |
-| GPT-3.5 Turbo | `gpt-3.5-turbo` | 高速・低コスト |
-| O1 Preview | `o1-preview` | 推論特化 |
-| O1 Mini | `o1-mini` | 推論・高速 |
-
-### コードでモデルを指定
-
-```elixir
-# 特定のモデルで実行
-MrEric.OpenAIClient.chat_completion("Hello", model: "gpt-3.5-turbo")
-
-# ストリーミングでも指定可能
-MrEric.OpenAIClient.stream_completion("Story", self(), model: "gpt-4-turbo")
-```
-
-## 🛠️ 開発
+## 開発とテスト
 
 ### よく使うコマンド
 
 | 作業 | コマンド |
 |------|----------|
 | サーバ起動 | `mix phx.server` |
-| テスト実行 | `mix test` |
-| 失敗したテストのみ再実行 | `mix test --failed` |
+| 対話型シェル | `iex -S mix phx.server` |
+| テスト | `mix test` |
+| 失敗テストのみ再実行 | `mix test --failed` |
+| deterministic eval | `mix mr_eric.evals` |
 | コード品質チェック | `mix precommit` |
 | 依存関係の取得 | `mix deps.get` |
-| アセットビルド（開発） | `mix assets.build` |
-| アセットビルド（本番） | `mix assets.deploy` |
-| 対話型シェル | `iex -S mix phx.server` |
+| アセットビルド | `mix assets.build` |
+| 本番アセットビルド | `mix assets.deploy` |
+
+### テスト
+
+```bash
+mix test
+mix test test/mr_eric/openai_client_test.exs
+mix test --failed
+mix mr_eric.evals
+```
+
+テストでは外部 API 実通信を行いません。
+
+- OpenAI 互換 API 呼び出しは `test/support/openai_mock.ex` で mock
+- Orchestrator / Run / eval は `MrEric.LLM.FakeProvider` で検証
+- LiveView は `Phoenix.LiveViewTest` と `LazyHTML` を利用
 
 ### コーディングガイドライン
 
-詳細は [AGENTS.md](./AGENTS.md) を参照してください。
+詳細は [AGENTS.md](./AGENTS.md) を参照してください。重要な点だけ抜粋します。
 
-**重要なポイント：**
+- 変更完了時は `mix precommit` を実行
+- LiveView template は `<Layouts.app flash={@flash}>` で開始
+- フォームは `to_form/2` と `<.input>` を使う
+- HTTP request は `Req` を使う
+- アイコンは `<.icon name="hero-..."/>` を使う
 
-- 変更完了時は必ず `mix precommit` を実行
-- LiveView テンプレートは `<Layouts.app flash={@flash}>` で開始
-- フォームは `to_form/2` を使用し、テンプレートで `@form` を参照
-- HTTP リクエストは必ず `:req` ライブラリを使用
-- アイコンは `<.icon name="hero-..."/>` コンポーネントを使用
-
-## 🧪 テスト
-
-### テストの実行
-
-```bash
-# 全テストを実行
-mix test
-
-# 特定のファイルのテスト
-mix test test/mr_eric/openai_client_test.exs
-
-# 失敗したテストのみ再実行
-mix test --failed
-
-# カバレッジ付きで実行
-mix test --cover
-```
-
-### テストの種類
-
-- **Unit Tests** - `test/mr_eric/`
-  - OpenAI クライアントのテスト
-  - Agent ロジックのテスト
-  
-- **Integration Tests** - `test/mr_eric_web/`
-  - LiveView の統合テスト
-  - コントローラーのテスト
-
-- **Mocking** - Req plug と FakeProvider を使用
-  - OpenAI互換API呼び出しは `test/support/openai_mock.ex` でモック
-  - Orchestrator/Run テストは `test/support/llm_fake_provider.ex` で外部通信なしに検証
-
-## 🏗️ アーキテクチャ
+## アーキテクチャ
 
 ### ディレクトリ構成
 
-```
+```text
 MrEric/
 ├── lib/
-│   ├── mr_eric/              # ビジネスロジック
-│   │   ├── agent.ex          # タスク実行エージェント
-│   │   ├── runs.ex           # Run開始・購読・キャンセルAPI
-│   │   ├── runs/             # Run状態、Worker、Supervisor、PubSub events
-│   │   ├── tools/            # Phase 5/6 tools、policy、patch validator、executor
-│   │   ├── rag/              # Phase 5B chunker、index、retriever
-│   │   ├── mcp/              # Phase 5B MCP client behaviour、tool adapter
-│   │   └── openai_client.ex  # OpenAI API クライアント
-│   └── mr_eric_web/          # Web インターフェース
-│       ├── live/
-│       │   └── agent_live.ex # メイン LiveView
-│       ├── components/        # UI コンポーネント
-│       ├── controllers/       # コントローラー
-│       └── endpoint.ex        # Phoenix エンドポイント
-├── assets/                    # フロントエンド資産
-│   ├── css/
-│   │   └── app.css           # Tailwind CSS v4
-│   └── js/
-│       └── app.js            # JavaScript
-├── test/                      # テストコード
-├── config/                    # 設定ファイル
-└── priv/                      # 静的リソース
+│   ├── mr_eric/
+│   │   ├── agent.ex          # インメモリ履歴
+│   │   ├── orchestrator.ex   # Planner/Drafter/Reviewer/Synthesizer orchestration
+│   │   ├── runs.ex           # Run API
+│   │   ├── runs/             # Run state、RunWorker、Trace、PubSub events
+│   │   ├── llm/              # Provider behaviour、OpenAICompat、Router、FakeProvider
+│   │   ├── tools/            # Tool、Policy、Executor、PatchValidator
+│   │   ├── rag/              # Chunker、Index、Retriever
+│   │   ├── mcp/              # MCP behaviour / adapter
+│   │   └── evals/            # Eval runner、scorer、secret checker
+│   └── mr_eric_web/
+│       ├── live/             # AgentLive
+│       ├── components/
+│       ├── controllers/
+│       └── endpoint.ex
+├── assets/
+├── config/
+├── priv/
+│   └── evals/                # Golden eval cases
+└── test/
 ```
 
 ### 主要モジュール
 
-#### `MrEric.Agent`
-- タスクの実行管理
-- 履歴の保存・取得
-- GenServer state を使用したインメモリ履歴
+| Module | 役割 |
+|--------|------|
+| `MrEric.Agent` | 完了 Run のインメモリ履歴 |
+| `MrEric.Runs` | Run 開始、購読、キャンセル、承認 API |
+| `MrEric.Runs.RunWorker` | Run state、Orchestrator task、PubSub event、tool approval を管理 |
+| `MrEric.Runs.Trace` | sanitized trace、duration、error classification、changed files を記録 |
+| `MrEric.Orchestrator` | Planner、Draft Agents、Reviewers、Synthesizer と tool loop を調整 |
+| `MrEric.LLM.Router` | agent spec から provider/model へ routing |
+| `MrEric.LLM.OpenAICompat` | OpenAI 互換 provider 実装 |
+| `MrEric.LLM.FakeProvider` | deterministic test/eval provider |
+| `MrEric.Tools` | built-in tools、policy、approval、patch validation |
+| `MrEric.RAG` | safe workspace scan による lightweight RAG |
+| `MrEric.MCP` | MCP interface-level extension point |
+| `MrEricWeb.AgentLive` | メイン LiveView、Run UI、approval UI |
 
-#### `MrEric.Runs`
-- Phase 4 の Run コンテキスト
-- `start_run/2`、`get_run/1`、`cancel_run/1`、`subscribe/1` を提供
-- 実行中状態は `RunWorker` の GenServer state に保持
-- 完了Runは既存 `MrEric.Agent` 履歴へコピー
-
-#### `MrEric.Runs.RunWorker` / `MrEric.Runs.RunSupervisor`
-- `DynamicSupervisor` 配下で1 Runにつき1 Workerを起動
-- `MrEric.Orchestrator.stream/3` からの stage event を受信
-- Phoenix PubSub topic `"runs:#{run_id}"` へ進捗を配信
-- キャンセル後のchunkや完了通知を無視
-- Phase 5A/5B tool call を受信し、承認が必要な場合は pending approval として保持
-- `reply_to` 付き tool call には内部 `:tool_result` を返信
-- Phase 5C tool loop では承認待ち中に Run status を `:waiting_for_approval` にし、approve/reject 後に Orchestrator へ結果を返して継続
-
-#### `MrEric.Tools`
-- `Tool` behaviour、`Registry`、`Policy`、`Executor` で構成
-- workspace外アクセス、秘密情報ファイル、危険コマンドを拒否
-- `shell_command` は承認後のみ実行
-- `file_write_proposal` はdiffを返すだけで実ファイルを書き換えない
-
-#### `MrEric.RAG`
-- safe workspace scan による lightweight RAG
-- chunker、index、retriever、`context_for/2` facade を提供
-- Orchestrator planner prompt へ context を追加し、失敗時は Run を継続
-
-#### `MrEric.MCP`
-- MCP client behaviour と tool adapter を提供
-- Phase 5B では外部 MCP サーバ接続は未実装
-
-#### `MrEric.OpenAIClient`
-- OpenAI 互換 API との通信（OpenAI/Grok/OpenRouter/Ollama/LM Studio）
-- `MrEric.LLM.OpenAICompat` への後方互換ラッパー
-- ストリーミング応答のサポート
-- `/v1/models` 取得用の `list_models/2`
-- OpenAI互換 `tool_calls` を保持し、Orchestrator tool loop に渡せる
-- 全モデル対応（プロバイダ側のモデル名で指定）
-
-#### `MrEric.LLM.Provider` / `MrEric.LLM.OpenAICompat`
-- LLM プロバイダ共通 behaviour と OpenAI 互換実装
-- `provider:` / `model:` opts によるリクエスト単位の切替
-- HTTP クライアントは `Req` を使用
-
-#### `MrEricWeb.AgentLive`
-- メイン LiveView
-- Provider / Model 選択
-- Run ID、全体ステータス、roleごとの進捗パネル
-- PubSub event を `handle_info/2` で受信して表示更新
-- 実行キャンセルと履歴表示
-
-## 🚢 デプロイ
+## デプロイ
 
 ### 本番環境のビルド
 
 ```bash
-# 環境変数の設定
 export SECRET_KEY_BASE=$(mix phx.gen.secret)
+export AI_PROVIDER=openai
 export OPENAI_API_KEY="your-api-key"
 export PHX_HOST="your-domain.com"
 
-# アセットとリリースのビルド
 MIX_ENV=prod mix assets.deploy
 MIX_ENV=prod mix release
-
-# リリースの起動
 _build/prod/rel/mr_eric/bin/mr_eric start
 ```
 
 ### 必要な環境変数
 
-必須変数は選択したプロバイダにより異なります。
+| 種別 | 変数 |
+|------|------|
+| 共通 | `SECRET_KEY_BASE`, `PHX_HOST` |
+| 任意 | `PORT` |
+| OpenAI | `OPENAI_API_KEY` |
+| Grok / xAI | `GROK_API_KEY` または `XAI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY`, 任意で `OPENROUTER_SITE_URL`, `OPENROUTER_APP_NAME` |
+| Ollama | 任意で `OLLAMA_BASE_URL` |
+| LM Studio | 任意で `LMSTUDIO_BASE_URL` |
 
-- 共通:
-  - `SECRET_KEY_BASE`（必須）
-  - `PHX_HOST`（必須）
-  - `PORT`（任意・デフォルト: 4000）
+## トラブルシュート
 
-- プロバイダ別（`AI_PROVIDER` 未指定時は `openai` 扱い）:
-  - `openai`: `OPENAI_API_KEY`（必須）
-  - `grok`/`xai`: `GROK_API_KEY` または `XAI_API_KEY`（いずれか必須）
-  - `openrouter`: `OPENROUTER_API_KEY`（必須）
-    - 任意: `OPENROUTER_SITE_URL`（または `SITE_URL`）、`OPENROUTER_APP_NAME`
-  - `ollama`: なし（任意で `OLLAMA_BASE_URL`）
-  - `lmstudio`/`llstudio`: なし（任意で `LMSTUDIO_BASE_URL`）
+### API key 未設定
 
-### Docker でのデプロイ
-
-```dockerfile
-FROM elixir:1.17-alpine AS build
-
-WORKDIR /app
-
-RUN mix local.hex --force && \
-    mix local.rebar --force
-
-COPY mix.exs mix.lock ./
-RUN mix deps.get --only prod
-
-COPY . .
-RUN mix assets.deploy && \
-    MIX_ENV=prod mix release
-
-FROM alpine:3.19
-RUN apk add --no-cache libstdc++ openssl ncurses-libs
-
-WORKDIR /app
-COPY --from=build /app/_build/prod/rel/mr_eric ./
-
-ENV PHX_SERVER=true
-EXPOSE 4000
-
-CMD ["bin/mr_eric", "start"]
-```
-
-## 🔧 トラブルシュート
-
-### よくある問題
-
-#### OpenAI API エラー
-
-```
-Error: {:error, %{status: 401}}
-```
-
-**解決方法:**
-- `OPENAI_API_KEY` が正しく設定されているか確認
-- API キーの有効性を OpenAI ダッシュボードで確認
-
-#### APIキー未設定
-
-```
+```text
 The selected provider is missing its API key.
 ```
 
-**解決方法:**
-- OpenAI/Grok/OpenRouter を使う場合は該当するAPIキーを環境変数へ設定
-- ローカルで試す場合は Provider を `ollama` または `lmstudio` に変更
-- APIキーはサーバ側環境変数にだけ設定し、ブラウザやテンプレートへ出さない
+- OpenAI/Grok/OpenRouter を使う場合は該当する API key をサーバ側環境変数へ設定
+- ローカルで試す場合は provider を `ollama` または `lmstudio` に変更
+- API key はブラウザ、template、PubSub event、trace、ログへ出さない
 
-#### ローカル LLM が起動していない
+### ローカル LLM が起動していない
 
-```
+```text
 The selected LLM provider is unavailable.
 ```
 
-**解決方法:**
-- Ollama: `ollama serve` が起動しているか確認
-- LM Studio: Local Server が起動し、OpenAI-compatible endpoint が有効か確認
-- `OLLAMA_BASE_URL` / `LMSTUDIO_BASE_URL` を変更している場合はURLとポートを確認
-- UIは壊れず該当stageを `failed` として表示し、他roleが継続可能ならRunを続行
+- Ollama は `ollama serve` を起動
+- LM Studio は Local Server と OpenAI-compatible endpoint を有効化
+- `OLLAMA_BASE_URL` / `LMSTUDIO_BASE_URL` の URL と port を確認
 
-#### モデル未ロード・モデル名不一致
+### モデル未ロード・モデル名不一致
 
-```
+```text
 The selected model or endpoint was not found.
 ```
 
-**解決方法:**
-- Ollama では `ollama list` でモデル名を確認し、必要なら `ollama pull llama3.1`
-- LM Studio ではモデルをロードしてから再実行
-- OpenRouter/OpenAIでは指定モデルIDが利用可能か確認
+- Ollama は `ollama list` でモデル名を確認し、必要なら `ollama pull llama3.1`
+- LM Studio はモデルをロードしてから再実行
+- OpenAI/OpenRouter は指定モデル ID が利用可能か確認
 
-#### Run をキャンセルしても外部側の処理がすぐ止まらない
+### Run をキャンセルしても provider 側の処理がすぐ止まらない
 
-**仕様:**
-- MrEric は RunWorker の orchestration task を停止し、以降のchunkをUIへ配信しません
-- すでにプロバイダへ届いたHTTPリクエストのサーバ側処理停止までは保証しません
-- キャンセル後は同じ画面から別タスクを実行できます
+MrEric は RunWorker の orchestration task を停止し、キャンセル後の chunk や完了通知を UI へ配信しません。ただし、すでに provider へ届いた HTTP request のサーバ側処理停止までは保証しません。
 
-#### アセットがビルドされない
+### アセットがビルドされない
 
-```
-Error: esbuild not found
-```
-
-**解決方法:**
 ```bash
 mix assets.setup
+mix assets.build
 ```
 
-#### ポートが既に使用中
+### ポートが既に使用中
 
-```
-Error: address already in use
-```
-
-**解決方法:**
 ```bash
-# ポート番号を変更
 PORT=4001 mix phx.server
 ```
 
-#### テストが失敗する
-
-**解決方法:**
-```bash
-# 依存関係を再取得
-mix deps.clean --all
-mix deps.get
-mix test
-```
-
-### ログの確認
+### テストが失敗する
 
 ```bash
-# 開発環境
-mix phx.server
-
-# 本番環境
-_build/prod/rel/mr_eric/bin/mr_eric remote
+mix test --failed
+mix test path/to/test_file.exs
+mix precommit
 ```
 
-## 📝 ライセンス
+## ライセンス
 
 本プロジェクトは MIT License で公開されています。詳細は [LICENSE](./LICENSE) を参照してください。
 
-## 🔗 リンク
+## リンク
 
-- **GitHub**: https://github.com/SilentMalachite/MrEric
-- **Phoenix Framework**: https://www.phoenixframework.org/
-- **OpenAI API**: https://platform.openai.com/docs
-- **Elixir**: https://elixir-lang.org/
+- GitHub: https://github.com/SilentMalachite/MrEric
+- Phoenix Framework: https://www.phoenixframework.org/
+- OpenAI API: https://platform.openai.com/docs
+- Elixir: https://elixir-lang.org/
 
-## 📮 サポート
+## サポート
 
 - Issues: [GitHub Issues](https://github.com/SilentMalachite/MrEric/issues)
 - Phoenix Forum: https://elixirforum.com/c/phoenix-forum
 
 ---
 
-**最終更新**: 2025-11-19  
-**バージョン**: 0.1.0
+最終更新: 2026-05-04
+バージョン: 0.1.0
