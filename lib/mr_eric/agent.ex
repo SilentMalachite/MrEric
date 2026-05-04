@@ -28,12 +28,23 @@ defmodule MrEric.Agent do
     GenServer.call(server, :history)
   end
 
+  def record(entry, opts \\ []) when is_map(entry) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:record, entry})
+  end
+
   @impl true
   def init(state), do: {:ok, state}
 
   @impl true
   def handle_call(:history, _from, state) do
     {:reply, state.history, state}
+  end
+
+  @impl true
+  def handle_call({:record, entry}, _from, state) do
+    history = [entry | state.history]
+    {:reply, {:ok, entry}, %{state | history: history}}
   end
 
   @impl true

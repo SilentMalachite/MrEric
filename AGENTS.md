@@ -63,6 +63,26 @@ MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o"
 MrEric.OpenAIClient.list_models(:openai, [])
 ```
 
+## Phase 4 Runs / realtime orchestration
+
+- `MrEric.Runs.start_run/2` starts one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor` for each user task. Use this path for LiveView realtime execution instead of starting ad-hoc Tasks from the UI.
+- `RunWorker` owns the current Run state, calls `MrEric.Orchestrator.stream(task, self(), opts)` in a separate task, updates stage state from received events, broadcasts sanitized events through PubSub, records completed runs into `MrEric.Agent`, and ignores late chunks after cancellation.
+- Run state is intentionally in-memory GenServer state for Phase 4 because this app currently has no Ecto repo configured. Do not add database persistence unless the surrounding data layer changes.
+- PubSub topics must be named exactly `"runs:#{run_id}"`.
+- Orchestrator stream events must use these shapes:
+  - `{:run_started, %{run_id: run_id, task: task}}`
+  - `{:stage_started, %{run_id: run_id, role: role}}`
+  - `{:stage_chunk, %{run_id: run_id, role: role, chunk: text}}`
+  - `{:stage_completed, %{run_id: run_id, role: role, content: content}}`
+  - `{:stage_failed, %{run_id: run_id, role: role, error: message}}`
+  - `{:run_completed, %{run_id: run_id, final: final}}`
+  - `{:run_failed, %{run_id: run_id, error: message}}`
+  - `{:run_cancelled, %{run_id: run_id}}`
+- Valid UI roles are `:planner`, `:local_drafter`, `:cloud_drafter`, `:critic`, `:reviewer`, and `:synthesizer`. Keep role-specific UI panels stable and addressable by DOM IDs.
+- LiveView should subscribe to only the current Run topic and process all run events in `handle_info/2`. Unsubscribe when switching runs or terminating the LiveView.
+- Never expose API keys, Authorization headers, cookies, or raw provider secrets in PubSub events, assigns, logs intended for users, templates, or browser-side JavaScript.
+- Do not implement ChatGPT Pro login, ChatGPT Web UI automation, cookie reuse, or scraping. Use only the configured OpenAI-compatible API providers.
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues

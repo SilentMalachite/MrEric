@@ -2,6 +2,15 @@ defmodule MrEricWeb.AgentLiveTest do
   use MrEricWeb.ConnCase
   import Phoenix.LiveViewTest
 
+  setup do
+    previous_run_opts = Application.get_env(:mr_eric, :live_run_opts, [])
+    Application.put_env(:mr_eric, :live_run_opts, provider_module: MrEric.LLM.FakeProvider)
+
+    on_exit(fn ->
+      Application.put_env(:mr_eric, :live_run_opts, previous_run_opts)
+    end)
+  end
+
   test "renders agent interface", %{conn: conn} do
     {:ok, view, html} = live(conn, "/")
 
@@ -11,6 +20,14 @@ defmodule MrEricWeb.AgentLiveTest do
     assert has_element?(view, "#task-form")
     assert has_element?(view, "#provider-select")
     assert has_element?(view, "#model-select")
+    assert has_element?(view, "#current-run")
+    assert has_element?(view, "#stage-planner")
+    assert has_element?(view, "#stage-local_drafter")
+    assert has_element?(view, "#stage-cloud_drafter")
+    assert has_element?(view, "#stage-critic")
+    assert has_element?(view, "#stage-reviewer")
+    assert has_element?(view, "#stage-synthesizer")
+    assert has_element?(view, "#stage-final")
   end
 
   test "displays provider and model selection dropdowns", %{conn: conn} do
@@ -49,7 +66,7 @@ defmodule MrEricWeb.AgentLiveTest do
     assert html =~ "gpt-4o-mini"
   end
 
-  test "passes selected provider and model to execution and streaming", %{conn: conn} do
+  test "starts a run with the selected provider and model", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
 
     view
@@ -64,37 +81,84 @@ defmodule MrEricWeb.AgentLiveTest do
     |> form("#task-form", %{"task" => "report provider"})
     |> render_submit()
 
-    Process.sleep(100)
+    assert_eventually(fn ->
+      html = render(view)
+      html =~ "provider:ollama model:llama3.1" and html =~ "Current Run"
+    end)
 
     html = render(view)
-    assert html =~ "provider:ollama model:llama3.1"
-    assert html =~ "Plan"
-    assert html =~ "Drafts"
-    assert html =~ "Review"
+    assert html =~ "Run ID"
+    assert html =~ "Planner"
+    assert html =~ "Local Drafter"
+    assert html =~ "Cloud Drafter"
+    assert html =~ "Critic"
+    assert html =~ "Reviewer"
+    assert html =~ "Synthesizer"
     assert html =~ "Final"
   end
 
-  test "shows loading state when executing task", %{conn: conn} do
+  test "shows run progress when executing task", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
 
     view
     |> form("#task-form", %{"task" => "Test task"})
     |> render_submit()
 
-    # Wait a moment for async task to start
-    Process.sleep(50)
+    assert_eventually(fn ->
+      html = render(view)
+      html =~ "plan from gpt-4o" and html =~ "final from gpt-4o"
+    end)
+  end
 
-    # Should have response from streaming
-    assert render(view) =~ "Mock response"
+  test "cancels the current run", %{conn: conn} do
+    previous_run_opts = Application.get_env(:mr_eric, :live_run_opts, [])
+
+    Application.put_env(:mr_eric, :live_run_opts,
+      provider_module: MrEric.LLM.FakeProvider,
+      delay_ms: 1_000
+    )
+
+    on_exit(fn ->
+      Application.put_env(:mr_eric, :live_run_opts, previous_run_opts)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("#task-form", %{"task" => "Slow task"})
+    |> render_submit()
+
+    assert_eventually(fn -> has_element?(view, "#cancel-run-button") end)
+
+    view
+    |> element("#cancel-run-button")
+    |> render_click()
+
+    assert_eventually(fn -> render(view) =~ "cancelled" end)
   end
 
   test "renders a recoverable error when the selected LLM is unavailable", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
 
-    send(view.pid, {:agent_error, :econnrefused})
+    send(view.pid, {:run_failed, %{run_id: nil, error: :econnrefused}})
 
     html = render(view)
     assert html =~ "The selected LLM provider is unavailable"
     assert has_element?(view, "#task-form")
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(50)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(fun, 0) do
+    assert fun.()
   end
 end

@@ -13,6 +13,8 @@ defmodule MrEric.Application do
       {Phoenix.PubSub, name: MrEric.PubSub},
       {Finch, name: MrEric.Finch},
       MrEric.Agent,
+      {Registry, keys: :unique, name: MrEric.Runs.Registry},
+      MrEric.Runs.RunSupervisor,
       MrEricWeb.Endpoint
     ]
 
