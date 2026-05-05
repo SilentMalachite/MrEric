@@ -408,8 +408,15 @@ defmodule MrEric.Runs.RunWorker do
 
   defp maybe_resolve_pending_tool_approvals(state, event)
        when event in [:run_completed, :run_failed, :run_cancelled] do
-    Enum.each(state.pending_tool_approvals, fn {_approval_id, request} ->
+    Enum.each(state.pending_tool_approvals, fn {approval_id, request} ->
       broadcast_tool_approval_resolved(state, request, false, "Run finished before approval.")
+
+      {ev, payload} =
+        Events.normalize_event(state.run.id,
+          {:tool_approval_expired,
+           %{approval_id: approval_id, reason: :run_terminated}})
+
+      Events.broadcast(state.run.id, {ev, payload})
     end)
 
     %{state | pending_tool_approvals: %{}}

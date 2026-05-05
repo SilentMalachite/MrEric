@@ -599,4 +599,25 @@ defmodule MrEric.RunsTest do
                       %{run_id: ^run_id, approval_id: ^approval_id, reason: :ttl}}, 500
     end
   end
+
+  describe "approval cleanup on run termination" do
+    test "cancelling a run with a pending approval emits :tool_approval_expired" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+      :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Use tool", owner,
+                 @opts ++ [id: run_id, orchestrator_module: ToolLoopOrchestrator])
+
+      approval_id = await_pending_approval(run_id)
+
+      :ok = Runs.cancel_run(run_id, owner)
+
+      assert_receive {:tool_approval_expired,
+                      %{run_id: ^run_id,
+                        approval_id: ^approval_id,
+                        reason: :run_terminated}}, 500
+    end
+  end
 end
