@@ -11,7 +11,11 @@ defmodule MrEricWeb.AgentLive do
   @run_events Events.names()
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    owner_id =
+      Map.get(session, "owner_id") ||
+        raise "owner_id missing from session — EnsureOwnerId plug not in pipeline?"
+
     selected_provider = Registry.default_provider()
     available_models = Registry.models_for_provider(selected_provider)
     selected_model = Registry.default_model(selected_provider)
@@ -19,6 +23,7 @@ defmodule MrEricWeb.AgentLive do
     {:ok,
      socket
      |> assign(
+       owner_id: owner_id,
        loading: false,
        response: "",
        selected_provider: selected_provider,
@@ -28,6 +33,7 @@ defmodule MrEricWeb.AgentLive do
        current_run: Run.blank(provider: selected_provider, model: selected_model),
        stage_roles: Run.roles(),
        tool_approvals: %{},
+       expired_approvals: [],
        tool_events: [],
        form: to_form(%{"task" => ""})
      )
@@ -447,7 +453,7 @@ defmodule MrEricWeb.AgentLive do
         |> run_opts(socket.assigns.selected_model)
         |> Keyword.put(:subscribe, true)
 
-      case Runs.start_run(task, opts) do
+      case Runs.start_run(task, socket.assigns.owner_id, opts) do
         {:ok, run} ->
           {:noreply,
            assign(socket,
@@ -486,8 +492,16 @@ defmodule MrEricWeb.AgentLive do
         {:noreply, socket}
 
       run_id ->
-        _result = Runs.approve_tool(run_id, approval_id)
-        {:noreply, socket}
+        case Runs.approve_tool(run_id, approval_id, socket.assigns.owner_id) do
+          :ok ->
+            {:noreply, socket}
+
+          {:error, :not_owner} ->
+            {:noreply, put_flash(socket, :error, "このRunの操作権限がありません")}
+
+          {:error, _reason} ->
+            {:noreply, socket}
+        end
     end
   end
 
@@ -498,8 +512,16 @@ defmodule MrEricWeb.AgentLive do
         {:noreply, socket}
 
       run_id ->
-        _result = Runs.deny_tool(run_id, approval_id)
-        {:noreply, socket}
+        case Runs.deny_tool(run_id, approval_id, socket.assigns.owner_id) do
+          :ok ->
+            {:noreply, socket}
+
+          {:error, :not_owner} ->
+            {:noreply, put_flash(socket, :error, "このRunの操作権限がありません")}
+
+          {:error, _reason} ->
+            {:noreply, socket}
+        end
     end
   end
 
@@ -510,9 +532,12 @@ defmodule MrEricWeb.AgentLive do
         {:noreply, socket}
 
       run_id ->
-        case Runs.cancel_run(run_id) do
+        case Runs.cancel_run(run_id, socket.assigns.owner_id) do
           :ok ->
             {:noreply, socket}
+
+          {:error, :not_owner} ->
+            {:noreply, put_flash(socket, :error, "このRunの操作権限がありません")}
 
           {:error, reason} ->
             run = Run.apply_event(socket.assigns.current_run, {:run_failed, %{error: reason}})
@@ -620,6 +645,14 @@ defmodule MrEricWeb.AgentLive do
     socket
     |> assign(:tool_approvals, Map.delete(socket.assigns.tool_approvals, payload.approval_id))
     |> upsert_tool_event(payload, status)
+  end
+
+  defp apply_tool_event(socket, :tool_approval_expired, payload) do
+    socket
+    |> assign(:tool_approvals,
+              Map.delete(socket.assigns.tool_approvals, payload.approval_id))
+    |> assign(:expired_approvals,
+              [payload | socket.assigns.expired_approvals])
   end
 
   defp apply_tool_event(socket, :tool_started, payload),

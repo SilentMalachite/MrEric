@@ -10,15 +10,16 @@ defmodule MrEric.Runs do
 
   @internal_opts [:subscribe]
 
-  def start_run(task, opts \\ [])
+  def start_run(task, owner_id, opts \\ [])
 
-  def start_run(task, opts) when is_binary(task) and is_list(opts) do
+  def start_run(task, owner_id, opts)
+      when is_binary(task) and is_binary(owner_id) and is_list(opts) do
     task = String.trim(task)
 
     if task == "" do
       {:error, :invalid_task}
     else
-      run = Run.new(task, opts)
+      run = Run.new(task, Keyword.put(opts, :owner_id, owner_id))
 
       if Keyword.get(opts, :subscribe, false) do
         subscribe(run.id)
@@ -34,13 +35,19 @@ defmodule MrEric.Runs do
     end
   end
 
-  def start_run(_task, _opts), do: {:error, :invalid_task}
+  def start_run(_task, _owner_id, _opts), do: {:error, :invalid_task}
 
-  def cancel_run(run_id), do: RunWorker.cancel(run_id)
+  def cancel_run(run_id, owner_id) when is_binary(owner_id) do
+    RunWorker.cancel(run_id, owner_id)
+  end
 
-  def approve_tool(run_id, approval_id), do: RunWorker.approve_tool(run_id, approval_id)
+  def approve_tool(run_id, approval_id, owner_id) when is_binary(owner_id) do
+    RunWorker.approve_tool(run_id, approval_id, owner_id)
+  end
 
-  def deny_tool(run_id, approval_id), do: RunWorker.deny_tool(run_id, approval_id)
+  def deny_tool(run_id, approval_id, owner_id) when is_binary(owner_id) do
+    RunWorker.deny_tool(run_id, approval_id, owner_id)
+  end
 
   def get_run(run_id), do: RunWorker.get_run(run_id)
 

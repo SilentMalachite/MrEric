@@ -11,6 +11,7 @@ defmodule MrEric.Evals.Runner do
   alias MrEric.Runs.Trace
 
   @timeout_ms 5_000
+  @eval_owner_id "eval-runner"
 
   def run_case(%EvalCase{} = eval_case, opts \\ []) do
     ensure_runtime_started()
@@ -52,7 +53,8 @@ defmodule MrEric.Evals.Runner do
         )
         |> add_case_opts(eval_case)
 
-      with {:ok, %Run{id: ^run_id}} <- Runs.start_run(eval_case.task, run_opts),
+      with {:ok, %Run{id: ^run_id}} <-
+             Runs.start_run(eval_case.task, @eval_owner_id, run_opts),
            {:ok, _events} <- collect_events(eval_case, run_id, [], deadline(@timeout_ms)),
            {:ok, run} <- Runs.get_run(run_id) do
         {:ok,
@@ -117,8 +119,8 @@ defmodule MrEric.Evals.Runner do
     approval_id = Map.fetch!(payload, :approval_id)
 
     case eval_case.approval_action do
-      :approve -> Runs.approve_tool(run_id, approval_id)
-      :reject -> Runs.deny_tool(run_id, approval_id)
+      :approve -> Runs.approve_tool(run_id, approval_id, @eval_owner_id)
+      :reject -> Runs.deny_tool(run_id, approval_id, @eval_owner_id)
       _other -> :ok
     end
   end
@@ -166,7 +168,7 @@ defmodule MrEric.Evals.Runner do
 
     Task.start(fn ->
       Process.sleep(delay)
-      Runs.cancel_run(run_id)
+      Runs.cancel_run(run_id, @eval_owner_id)
       send(parent, {:phase9_cancel_sent, run_id})
     end)
   end
