@@ -64,7 +64,8 @@ defmodule MrEric.RunsTest do
   test "start_run/2 starts a RunWorker and exposes the run state" do
     run_id = unique_run_id()
 
-    assert {:ok, %Run{id: ^run_id}} = Runs.start_run("Build Phase 4", @opts ++ [id: run_id])
+    assert {:ok, %Run{id: ^run_id}} =
+             Runs.start_run("Build Phase 4", "test-owner-#{run_id}", @opts ++ [id: run_id])
 
     assert {:ok, %Run{id: ^run_id, task: "Build Phase 4"}} = Runs.get_run(run_id)
   end
@@ -132,11 +133,13 @@ defmodule MrEric.RunsTest do
     assert :ok = Runs.subscribe(run_id)
 
     assert {:ok, %Run{id: ^run_id}} =
-             Runs.start_run("Long running task", @opts ++ [id: run_id, delay_ms: 1_000])
+             Runs.start_run("Long running task", "test-owner-#{run_id}",
+               @opts ++ [id: run_id, delay_ms: 1_000]
+             )
 
     assert_receive {:run_started, %{run_id: ^run_id}}
 
-    assert :ok = Runs.cancel_run(run_id)
+    assert :ok = Runs.cancel_run(run_id, "test-owner-#{run_id}")
     assert_receive {:run_cancelled, %{run_id: ^run_id}}
 
     assert {:ok, %Run{status: :cancelled}} = Runs.get_run(run_id)
@@ -166,7 +169,7 @@ defmodule MrEric.RunsTest do
     refute_receive {:tool_completed, %{tool_call_id: "call-1"}}, 50
     assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
 
-    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert :ok = RunWorker.approve_tool(pid, approval_id, "test-owner")
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: true}}
     assert_receive {:tool_started, %{tool_call_id: "call-1", tool: :shell_command}}
     assert_receive {:tool_completed, %{tool_call_id: "call-1", result: %{exit_status: 0}}}
@@ -206,7 +209,7 @@ defmodule MrEric.RunsTest do
     assert_receive {:tool_approval_requested,
                     %{tool: :apply_patch, approval_id: approval_id, risk_level: :high}}
 
-    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert :ok = RunWorker.approve_tool(pid, approval_id, "test-owner")
     assert_receive {:tool_completed, %{tool_call_id: "patch-call", result: result}}
     assert result.changed_files == ["note.txt"]
     assert result.git_diff =~ "+new"
@@ -232,7 +235,7 @@ defmodule MrEric.RunsTest do
 
     assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
 
-    assert :ok = RunWorker.deny_tool(pid, approval_id)
+    assert :ok = RunWorker.deny_tool(pid, approval_id, "test-owner")
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
     assert_receive {:tool_rejected, %{tool_call_id: "call-denied", error: "Tool request denied."}}
     refute_receive {:tool_started, %{tool_call_id: "call-denied"}}, 50
@@ -252,7 +255,7 @@ defmodule MrEric.RunsTest do
     assert_receive {:tool_approval_requested, %{approval_id: approval_id, role: :planner}}
     assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
 
-    assert :ok = RunWorker.approve_tool(pid, approval_id)
+    assert :ok = RunWorker.approve_tool(pid, approval_id, "test-owner")
     assert_receive {:tool_completed, %{tool_call_id: "call-loop", result: %{exit_status: 0}}}
     assert_receive {:run_completed, %{final: "continued after completed"}}
 
@@ -298,11 +301,11 @@ defmodule MrEric.RunsTest do
 
     assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
 
-    assert :ok = RunWorker.approve_tool(pid, approval_one)
+    assert :ok = RunWorker.approve_tool(pid, approval_one, "test-owner")
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_one, approved: true}}
     assert {:ok, %Run{status: :waiting_for_approval}} = RunWorker.get_run(pid)
 
-    assert :ok = RunWorker.deny_tool(pid, approval_two)
+    assert :ok = RunWorker.deny_tool(pid, approval_two, "test-owner")
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_two, approved: false}}
     assert {:ok, %Run{status: :running}} = RunWorker.get_run(pid)
   end
@@ -320,7 +323,7 @@ defmodule MrEric.RunsTest do
     assert :ok = Runs.subscribe(run.id)
     assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
 
-    assert :ok = RunWorker.deny_tool(pid, approval_id)
+    assert :ok = RunWorker.deny_tool(pid, approval_id, "test-owner")
     assert_receive {:tool_rejected, %{tool_call_id: "call-loop"}}
     assert_receive {:run_completed, %{final: "continued after rejected"}}
 
@@ -445,7 +448,7 @@ defmodule MrEric.RunsTest do
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
     assert_receive {:run_completed, %{final: "done"}}
 
-    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id)
+    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id, "test-owner")
     refute_receive {:tool_started, %{tool_call_id: "call-terminal"}}, 50
   end
 
@@ -463,12 +466,12 @@ defmodule MrEric.RunsTest do
 
     assert_receive {:tool_approval_requested, %{approval_id: approval_id}}
 
-    assert :ok = RunWorker.cancel(pid)
+    assert :ok = RunWorker.cancel(pid, "test-owner")
     assert_receive {:tool_approval_resolved, %{approval_id: ^approval_id, approved: false}}
     assert_receive {:run_cancelled, %{run_id: run_id}}
     assert run_id == run.id
 
-    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id)
+    assert {:error, :not_found} = RunWorker.approve_tool(pid, approval_id, "test-owner")
     refute_receive {:tool_started, %{tool_call_id: "call-cancelled"}}, 50
   end
 
@@ -483,5 +486,74 @@ defmodule MrEric.RunsTest do
     File.mkdir_p!(workspace)
     on_exit(fn -> File.rm_rf!(workspace) end)
     workspace
+  end
+
+  describe "owner_id authorisation" do
+    test "start_run/3 stores owner_id on the run" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %Run{id: ^run_id, owner_id: ^owner}} =
+               Runs.start_run("Build", owner, @opts ++ [id: run_id])
+    end
+
+    test "cancel_run/2 rejects a non-owner with {:error, :not_owner}" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+
+      assert :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Long task", owner, @opts ++ [id: run_id, delay_ms: 1_000])
+
+      assert {:error, :not_owner} = Runs.cancel_run(run_id, "mallory")
+
+      # The run is still alive — owner can still cancel
+      assert :ok = Runs.cancel_run(run_id, owner)
+    end
+
+    test "approve_tool/3 rejects a non-owner with {:error, :not_owner}" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+
+      assert :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Use tool", owner,
+                 @opts ++ [id: run_id, orchestrator_module: ToolLoopOrchestrator]
+               )
+
+      approval_id = await_pending_approval(run_id)
+
+      assert {:error, :not_owner} = Runs.approve_tool(run_id, approval_id, "mallory")
+
+      # State unchanged: owner can still approve
+      assert :ok = Runs.approve_tool(run_id, approval_id, owner)
+    end
+
+    test "deny_tool/3 rejects a non-owner with {:error, :not_owner}" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+
+      assert :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Use tool", owner,
+                 @opts ++ [id: run_id, orchestrator_module: ToolLoopOrchestrator]
+               )
+
+      approval_id = await_pending_approval(run_id)
+
+      assert {:error, :not_owner} = Runs.deny_tool(run_id, approval_id, "mallory")
+      assert :ok = Runs.deny_tool(run_id, approval_id, owner)
+    end
+  end
+
+  defp await_pending_approval(run_id) do
+    receive do
+      {:tool_approval_requested, %{run_id: ^run_id, approval_id: id}} -> id
+    after
+      2_000 -> flunk("no approval observed for run #{run_id}")
+    end
   end
 end

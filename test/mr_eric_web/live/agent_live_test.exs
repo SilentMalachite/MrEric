@@ -330,6 +330,26 @@ defmodule MrEricWeb.AgentLiveTest do
     assert html =~ "[REDACTED]"
   end
 
+  test "mount succeeds when EnsureOwnerId plug supplies owner_id", %{conn: conn} do
+    # If EnsureOwnerId is not wired into :browser, mount/3 raises and
+    # live/2 propagates the error.
+    {:ok, _view, html} = live(conn, "/")
+    assert html =~ "MrEric AI Agent"
+  end
+
+  test "mount/3 raises when session has no owner_id" do
+    # `live(conn, "/")` always goes through the :browser pipeline, which
+    # would mint an owner_id. To verify the defensive raise we call
+    # mount/3 directly with an empty session map.
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{__changed__: %{}, flash: %{}}
+    }
+
+    assert_raise RuntimeError, ~r/owner_id missing from session/, fn ->
+      MrEricWeb.AgentLive.mount(%{}, %{}, socket)
+    end
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

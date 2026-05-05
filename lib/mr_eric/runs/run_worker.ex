@@ -8,6 +8,7 @@ defmodule MrEric.Runs.RunWorker do
   alias MrEric.Agent
   alias MrEric.Orchestrator
   alias MrEric.Runs.Events
+  alias MrEric.Runs.OwnerCheck
   alias MrEric.Runs.Run
   alias MrEric.Tools.Executor
 
@@ -53,33 +54,35 @@ defmodule MrEric.Runs.RunWorker do
     end
   end
 
-  def cancel(pid) when is_pid(pid), do: GenServer.call(pid, :cancel)
+  def cancel(pid, owner_id) when is_pid(pid) and is_binary(owner_id) do
+    GenServer.call(pid, {:cancel, owner_id})
+  end
 
-  def cancel(run_id) do
+  def cancel(run_id, owner_id) when is_binary(owner_id) do
     case lookup(run_id) do
-      {:ok, pid} -> cancel(pid)
+      {:ok, pid} -> cancel(pid, owner_id)
       :error -> {:error, :not_found}
     end
   end
 
-  def approve_tool(pid, approval_id) when is_pid(pid) do
-    GenServer.call(pid, {:approve_tool, approval_id})
+  def approve_tool(pid, approval_id, owner_id) when is_pid(pid) and is_binary(owner_id) do
+    GenServer.call(pid, {:approve_tool, approval_id, owner_id})
   end
 
-  def approve_tool(run_id, approval_id) do
+  def approve_tool(run_id, approval_id, owner_id) when is_binary(owner_id) do
     case lookup(run_id) do
-      {:ok, pid} -> approve_tool(pid, approval_id)
+      {:ok, pid} -> approve_tool(pid, approval_id, owner_id)
       :error -> {:error, :not_found}
     end
   end
 
-  def deny_tool(pid, approval_id) when is_pid(pid) do
-    GenServer.call(pid, {:deny_tool, approval_id})
+  def deny_tool(pid, approval_id, owner_id) when is_pid(pid) and is_binary(owner_id) do
+    GenServer.call(pid, {:deny_tool, approval_id, owner_id})
   end
 
-  def deny_tool(run_id, approval_id) do
+  def deny_tool(run_id, approval_id, owner_id) when is_binary(owner_id) do
     case lookup(run_id) do
-      {:ok, pid} -> deny_tool(pid, approval_id)
+      {:ok, pid} -> deny_tool(pid, approval_id, owner_id)
       :error -> {:error, :not_found}
     end
   end
@@ -144,36 +147,69 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
-  def handle_call(:cancel, _from, state) do
-    state =
-      if Run.terminal?(state.run) do
-        state
-      else
-        shutdown_task(state.task)
-
-        {event, payload} = Events.normalize_event(state.run.id, {:run_cancelled, %{}})
-        run = Run.apply_event(state.run, {event, payload})
-
+  def handle_call({:cancel, owner_id}, _from, state) do
+    case OwnerCheck.verify(state.run, owner_id) do
+      {:ok, _} ->
         state =
-          state
-          |> Map.put(:run, run)
-          |> Map.put(:task, nil)
-          |> Map.put(:cancelled?, true)
-          |> maybe_resolve_pending_tool_approvals(:run_cancelled)
+          if Run.terminal?(state.run) do
+            state
+          else
+            shutdown_task(state.task)
 
-        Events.broadcast(run.id, {event, payload})
+            {event, payload} = Events.normalize_event(state.run.id, {:run_cancelled, %{}})
+            run = Run.apply_event(state.run, {event, payload})
 
-        state
-      end
+            state =
+              state
+              |> Map.put(:run, run)
+              |> Map.put(:task, nil)
+              |> Map.put(:cancelled?, true)
+              |> maybe_resolve_pending_tool_approvals(:run_cancelled)
 
-    {:reply, :ok, state}
+            Events.broadcast(run.id, {event, payload})
+
+            state
+          end
+
+        {:reply, :ok, state}
+
+      {:error, :not_owner} = err ->
+        require Logger
+        Logger.warning("run #{state.run.id}: cancel attempted by non-owner")
+        {:reply, err, state}
+    end
   end
 
   @impl true
-  def handle_call({:approve_tool, approval_id}, _from, state) do
-    if Run.terminal?(state.run) do
-      {:reply, {:error, :not_found}, %{state | pending_tool_approvals: %{}}}
+  def handle_call({:approve_tool, approval_id, owner_id}, _from, state) do
+    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id) do
+      if Run.terminal?(state.run) do
+        {:reply, {:error, :not_found}, %{state | pending_tool_approvals: %{}}}
+      else
+        case Map.pop(state.pending_tool_approvals, approval_id) do
+          {nil, _pending} ->
+            {:reply, {:error, :not_found}, state}
+
+          {request, pending} ->
+            state =
+              state
+              |> Map.put(:pending_tool_approvals, pending)
+              |> broadcast_tool_approval_resolved(request, true, "Tool request approved.")
+
+            {:reply, :ok, state, {:continue, {:execute_approved_tool, request}}}
+        end
+      end
     else
+      {:error, :not_owner} = err ->
+        require Logger
+        Logger.warning("run #{state.run.id}: approve attempted by non-owner")
+        {:reply, err, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:deny_tool, approval_id, owner_id}, _from, state) do
+    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id) do
       case Map.pop(state.pending_tool_approvals, approval_id) do
         {nil, _pending} ->
           {:reply, {:error, :not_found}, state}
@@ -182,27 +218,16 @@ defmodule MrEric.Runs.RunWorker do
           state =
             state
             |> Map.put(:pending_tool_approvals, pending)
-            |> broadcast_tool_approval_resolved(request, true, "Tool request approved.")
+            |> broadcast_tool_approval_resolved(request, false, "Tool request denied.")
+            |> broadcast_tool_rejected(request, :tool_denied)
 
-          {:reply, :ok, state, {:continue, {:execute_approved_tool, request}}}
+          {:reply, :ok, state}
       end
-    end
-  end
-
-  @impl true
-  def handle_call({:deny_tool, approval_id}, _from, state) do
-    case Map.pop(state.pending_tool_approvals, approval_id) do
-      {nil, _pending} ->
-        {:reply, {:error, :not_found}, state}
-
-      {request, pending} ->
-        state =
-          state
-          |> Map.put(:pending_tool_approvals, pending)
-          |> broadcast_tool_approval_resolved(request, false, "Tool request denied.")
-          |> broadcast_tool_rejected(request, :tool_denied)
-
-        {:reply, :ok, state}
+    else
+      {:error, :not_owner} = err ->
+        require Logger
+        Logger.warning("run #{state.run.id}: deny attempted by non-owner")
+        {:reply, err, state}
     end
   end
 
