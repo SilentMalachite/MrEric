@@ -6,6 +6,8 @@ defmodule MrEric.Tools.Executor do
   alias MrEric.Tools.Policy
   alias MrEric.Tools.Registry
 
+  @approval_ttl_seconds 30 * 60
+
   def execute(tool, args, opts \\ []) do
     args = Policy.normalize_args(args)
 
@@ -43,15 +45,20 @@ defmodule MrEric.Tools.Executor do
   defp approval_request(module, args, decision, opts) do
     approval_id = Keyword.get(opts, :approval_id) || new_id("approval")
     tool_call_id = Keyword.get(opts, :tool_call_id) || new_id("tool")
+    owner_id = Keyword.fetch!(opts, :owner_id)
+    requested_at = DateTime.utc_now()
+    expires_at = DateTime.add(requested_at, @approval_ttl_seconds, :second)
 
     %{
       approval_id: approval_id,
-      approval_token: approval_token(module.name(), args, approval_id, tool_call_id),
+      approval_token: approval_token(module.name(), args, approval_id, tool_call_id, owner_id),
       tool_call_id: tool_call_id,
       tool: module.name(),
       args: args,
       reason: Map.get(decision, :reason, "Tool execution requires approval."),
-      requested_at: DateTime.utc_now()
+      requested_at: requested_at,
+      expires_at: expires_at,
+      owner_id: owner_id
     }
   end
 
@@ -75,10 +82,12 @@ defmodule MrEric.Tools.Executor do
          args: args,
          approval_id: approval_id,
          tool_call_id: tool_call_id,
+         owner_id: owner_id,
          approval_token: token
        })
-       when is_binary(approval_id) and is_binary(tool_call_id) and is_binary(token) do
-    expected = approval_token(tool, args, approval_id, tool_call_id)
+       when is_binary(approval_id) and is_binary(tool_call_id) and is_binary(owner_id) and
+              is_binary(token) do
+    expected = approval_token(tool, args, approval_id, tool_call_id, owner_id)
 
     if Plug.Crypto.secure_compare(token, expected) do
       :ok
@@ -89,8 +98,8 @@ defmodule MrEric.Tools.Executor do
 
   defp verify_approval_request(_request), do: {:error, :approval_required}
 
-  defp approval_token(tool, args, approval_id, tool_call_id) do
-    data = :erlang.term_to_binary({tool, args, approval_id, tool_call_id})
+  defp approval_token(tool, args, approval_id, tool_call_id, owner_id) do
+    data = :erlang.term_to_binary({tool, args, approval_id, tool_call_id, owner_id})
 
     :hmac
     |> :crypto.mac(:sha256, approval_secret(), data)

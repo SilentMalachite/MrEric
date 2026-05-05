@@ -549,6 +549,7 @@ defmodule MrEric.Runs.RunWorker do
   defp tool_opts(state, tool_call_id, nil) do
     state.opts
     |> Keyword.put(:tool_call_id, tool_call_id)
+    |> Keyword.put(:owner_id, state.run.owner_id)
     |> Keyword.put_new(:workspace_root, File.cwd!())
   end
 
