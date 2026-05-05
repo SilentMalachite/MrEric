@@ -18,7 +18,7 @@ defmodule MrEric.Runs do
     if task == "" do
       {:error, :invalid_task}
     else
-      run = Run.new(task, opts)
+      run = Run.new(task, Keyword.put_new(opts, :owner_id, "(legacy-no-owner)"))
 
       if Keyword.get(opts, :subscribe, false) do
         subscribe(run.id)

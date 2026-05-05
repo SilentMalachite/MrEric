@@ -36,6 +36,7 @@ defmodule MrEric.Runs.Run do
   @derive {Inspect, except: []}
   defstruct [
     :id,
+    :owner_id,
     :task,
     :provider,
     :model,
@@ -54,12 +55,14 @@ defmodule MrEric.Runs.Run do
 
   def new(task, opts \\ []) do
     now = DateTime.utc_now()
+    owner_id = Keyword.fetch!(opts, :owner_id)
     provider = Keyword.get(opts, :provider)
     model = Keyword.get(opts, :model)
     id = Keyword.get(opts, :id) || new_id()
 
     %__MODULE__{
       id: id,
+      owner_id: owner_id,
       task: task,
       provider: provider,
       model: model,
@@ -73,6 +76,8 @@ defmodule MrEric.Runs.Run do
   end
 
   def blank(opts \\ []) do
+    opts = Keyword.put_new(opts, :owner_id, "(none)")
+
     nil
     |> new(opts)
     |> Map.put(:id, nil)

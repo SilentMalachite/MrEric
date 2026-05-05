@@ -79,7 +79,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker updates state and broadcasts stage chunks" do
-    run = Run.new("Manual run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Manual run", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -96,7 +96,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker updates state and broadcasts stage failures" do
-    run = Run.new("Manual failure", id: unique_run_id(), provider: :openai, model: "gpt-4o")
+    run = Run.new("Manual failure", owner_id: "test-owner", id: unique_run_id(), provider: :openai, model: "gpt-4o")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -143,7 +143,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker requests approval before executing a shell tool" do
-    run = Run.new("Manual tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Manual tool run", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -181,7 +181,7 @@ defmodule MrEric.RunsTest do
     agent_server = :"agent_#{System.unique_integer([:positive])}"
     start_supervised!({MrEric.Agent, name: agent_server})
 
-    run = Run.new("Patch run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Patch run", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
 
     assert {:ok, pid} =
              RunWorker.start_link(
@@ -220,7 +220,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker broadcasts rejected tool approvals without execution" do
-    run = Run.new("Manual denied tool", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Manual denied tool", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -239,7 +239,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker continues an orchestrator loop after approving a tool" do
-    run = Run.new("approval loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("approval loop", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
 
     assert {:ok, pid} =
              RunWorker.start_link(
@@ -261,7 +261,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker stays waiting while other tool approvals remain pending" do
-    run = Run.new("Two approvals", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Two approvals", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -308,7 +308,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker returns a rejected result and continues after rejecting approval" do
-    run = Run.new("reject loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("reject loop", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
 
     assert {:ok, pid} =
              RunWorker.start_link(
@@ -329,7 +329,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker denies unknown tools and returns the denial to the orchestrator" do
-    run = Run.new("unknown tool loop", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("unknown tool loop", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
 
     assert {:ok, _pid} =
              RunWorker.start_link(
@@ -347,7 +347,7 @@ defmodule MrEric.RunsTest do
     workspace = tmp_workspace()
     File.write!(Path.join(workspace, "note.txt"), "hello from tool result")
 
-    run = Run.new("Manual tool reply", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Manual tool reply", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
 
     assert {:ok, pid} =
              RunWorker.start_link(
@@ -428,7 +428,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker clears pending tool approvals after terminal events" do
-    run = Run.new("Terminal tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Terminal tool run", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
@@ -450,7 +450,7 @@ defmodule MrEric.RunsTest do
   end
 
   test "RunWorker resolves pending tool approvals when cancelled" do
-    run = Run.new("Cancelled tool run", id: unique_run_id(), provider: :ollama, model: "llama3.1")
+    run = Run.new("Cancelled tool run", owner_id: "test-owner", id: unique_run_id(), provider: :ollama, model: "llama3.1")
     assert {:ok, pid} = RunWorker.start_link(run: run, opts: [], auto_start: false, name: nil)
 
     assert :ok = Runs.subscribe(run.id)
