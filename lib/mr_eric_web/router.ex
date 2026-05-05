@@ -4,6 +4,7 @@ defmodule MrEricWeb.Router do
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
+    plug MrEric.Plugs.EnsureOwnerId
     plug :fetch_live_flash
     plug :put_root_layout, html: {MrEricWeb.Layouts, :root}
     plug :protect_from_forgery
