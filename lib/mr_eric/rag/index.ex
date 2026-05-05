@@ -7,8 +7,18 @@ defmodule MrEric.RAG.Index do
   alias MrEric.Tools.Policy
 
   @default_extensions ~w(.css .ex .exs .heex .html .js .json .lock .md .toml .ts .txt .yaml .yml)
-  @default_ignored_dirs ~w(.elixir_ls .git _build cover deps node_modules)
+  @default_ignored_dirs ~w(.elixir_ls .git _build cover deps node_modules
+                           config priv/cert priv/secrets .serena .expert .idea .claude)
+  @default_ignored_files [
+    ~r/^\.env(\..*)?$/,
+    ~r/^secrets?\.exs$/,
+    ~r/^prod\.secret\.exs$/
+  ]
+  @default_ignored_extensions ~w(.pem .key .p12 .pfx .cer .crt .pkcs12 .jks .asc .gpg)
   @default_max_file_bytes 64_000
+
+  # Dirs ignored only because they are likely to contain secrets; skipped when allow_secret_paths: true.
+  @secret_dirs ~w(config priv/cert priv/secrets)
 
   def build(opts \\ []) do
     workspace = Policy.workspace_root(opts)
@@ -47,14 +57,28 @@ defmodule MrEric.RAG.Index do
 
   defp discover_paths(workspace, opts) do
     extensions = Keyword.get(opts, :include_extensions, @default_extensions)
-    ignored_dirs = opts |> Keyword.get(:ignore_dirs, @default_ignored_dirs) |> MapSet.new()
+    allow_secret = Keyword.get(opts, :allow_secret_paths, false)
+
+    base_dirs =
+      if allow_secret,
+        do: @default_ignored_dirs -- @secret_dirs,
+        else: @default_ignored_dirs
+
+    ignored_dirs =
+      (base_dirs ++ Keyword.get(opts, :extra_ignored_dirs, []))
+      |> MapSet.new()
+
+    ignored_files = @default_ignored_files ++ Keyword.get(opts, :extra_ignored_files, [])
+    ignored_extensions = MapSet.new(@default_ignored_extensions)
 
     workspace
-    |> discover_dir("", extensions, ignored_dirs, [])
+    |> discover_dir("", extensions, ignored_dirs, ignored_files,
+                    ignored_extensions, allow_secret, [])
     |> Enum.reverse()
   end
 
-  defp discover_dir(workspace, relative_dir, extensions, ignored_dirs, acc) do
+  defp discover_dir(workspace, relative_dir, extensions, ignored_dirs,
+                    ignored_files, ignored_extensions, allow_secret, acc) do
     dir = Path.join(workspace, relative_dir)
 
     case File.ls(dir) do
@@ -65,16 +89,23 @@ defmodule MrEric.RAG.Index do
 
           case File.lstat(absolute_path) do
             {:ok, %File.Stat{type: :directory}} ->
-              if MapSet.member?(ignored_dirs, entry) do
-                acc
-              else
-                discover_dir(workspace, relative_path, extensions, ignored_dirs, acc)
+              cond do
+                MapSet.member?(ignored_dirs, entry) -> acc
+                MapSet.member?(ignored_dirs, relative_path) -> acc
+                not allow_secret and MrEric.Tools.Policy.secret_path?(relative_path) -> acc
+                true ->
+                  discover_dir(workspace, relative_path, extensions, ignored_dirs,
+                               ignored_files, ignored_extensions, allow_secret, acc)
               end
 
             {:ok, %File.Stat{type: :regular}} ->
-              if indexed_extension?(relative_path, extensions),
-                do: [relative_path | acc],
-                else: acc
+              cond do
+                not indexed_extension?(relative_path, extensions) -> acc
+                MapSet.member?(ignored_extensions, Path.extname(relative_path)) -> acc
+                Enum.any?(ignored_files, &Regex.match?(&1, Path.basename(relative_path))) -> acc
+                not allow_secret and MrEric.Tools.Policy.secret_path?(relative_path) -> acc
+                true -> [relative_path | acc]
+              end
 
             _other ->
               acc

@@ -69,4 +69,40 @@ defmodule MrEric.RAG.IndexTest do
     assert content =~ "approval gate"
     assert score > 0
   end
+
+  test "skips config/, priv/cert, *.pem, and secrets fixtures by default", %{workspace: workspace} do
+    File.mkdir_p!(Path.join(workspace, "config"))
+    File.mkdir_p!(Path.join(workspace, "priv/cert"))
+    File.mkdir_p!(Path.join(workspace, "priv/secrets"))
+
+    File.write!(Path.join(workspace, "config/dev.exs"),
+      ~s|config :app, secret_key_base: "FAKE-TEST-VALUE-DO-NOT-USE"\n|)
+    File.write!(Path.join(workspace, "priv/cert/server.pem"), "-----BEGIN CERT-----\n")
+    File.write!(Path.join(workspace, "priv/secrets/foo.exs"), "config :app, secret: 1\n")
+
+    assert {:ok, index} = Index.build(workspace_root: workspace)
+
+    paths = Enum.map(index.chunks, & &1.path)
+
+    refute "config/dev.exs" in paths
+    refute "priv/cert/server.pem" in paths
+    refute "priv/secrets/foo.exs" in paths
+
+    refute Enum.any?(index.chunks, &(&1.content =~ "FAKE-TEST-VALUE"))
+  end
+
+  test "allow_secret_paths: true opts back in to indexing secret paths", %{workspace: workspace} do
+    File.mkdir_p!(Path.join(workspace, "config"))
+    File.write!(Path.join(workspace, "config/dev.exs"), "config :app, foo: 1\n")
+
+    assert {:ok, index} =
+             Index.build(
+               workspace_root: workspace,
+               allow_secret_paths: true,
+               extra_ignored_dirs: []
+             )
+
+    paths = Enum.map(index.chunks, & &1.path)
+    assert "config/dev.exs" in paths
+  end
 end
