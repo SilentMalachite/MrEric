@@ -34,4 +34,18 @@ defmodule MrEricWeb.ConnCase do
   setup _tags do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
+
+  @doc """
+  Initialise a test conn with a known `owner_id` in the session.
+
+  Use when a test needs to bypass the EnsureOwnerId plug — for example unit
+  tests that build a `conn` outside the `:browser` pipeline. The full
+  `live(conn, "/")` integration path runs the plug naturally.
+  """
+  def with_owner_session(conn, owner_id \\ nil) do
+    owner_id =
+      owner_id || "test-owner-" <> Integer.to_string(System.unique_integer([:positive]))
+
+    Plug.Test.init_test_session(conn, %{"owner_id" => owner_id})
+  end
 end
