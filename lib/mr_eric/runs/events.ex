@@ -15,6 +15,7 @@ defmodule MrEric.Runs.Events do
     :tool_started,
     :tool_approval_requested,
     :tool_approval_resolved,
+    :tool_approval_expired,
     :tool_completed,
     :tool_failed,
     :tool_denied,
