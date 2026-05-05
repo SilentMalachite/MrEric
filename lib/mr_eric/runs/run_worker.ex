@@ -97,6 +97,13 @@ defmodule MrEric.Runs.RunWorker do
     end
   end
 
+  @doc false
+  # Test-only: returns the GenServer pid for this run.
+  def test_pid(run_id) do
+    {:ok, pid} = lookup(run_id)
+    pid
+  end
+
   def via(run_id), do: {:via, Registry, {@registry, run_id}}
 
   @impl true
@@ -300,6 +307,30 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
+  def handle_info({:expire_approval, approval_id}, state) do
+    case Map.get(state.pending_tool_approvals, approval_id) do
+      nil ->
+        # Already approved/denied — nothing to do
+        {:noreply, state}
+
+      request ->
+        case check_expiry(request) do
+          {:error, :expired} ->
+            {:noreply, drop_expired_approval(state, approval_id, :ttl)}
+
+          :ok ->
+            # Clock skew or test manipulation — defer
+            delay =
+              DateTime.diff(request.expires_at, DateTime.utc_now(), :millisecond)
+              |> max(1_000)
+
+            Process.send_after(self(), {:expire_approval, approval_id}, delay)
+            {:noreply, state}
+        end
+    end
+  end
+
+  @impl true
   def handle_info({ref, _result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | task: nil}}
@@ -438,6 +469,8 @@ defmodule MrEric.Runs.RunWorker do
         state =
           state
           |> broadcast_and_apply(:tool_approval_requested, public_tool_payload(request))
+
+        schedule_approval_expiry(request)
 
         put_in(state.pending_tool_approvals[request.approval_id], request)
 
@@ -619,6 +652,12 @@ defmodule MrEric.Runs.RunWorker do
 
     Events.broadcast(state.run.id, {event, payload})
     %{state | pending_tool_approvals: pending}
+  end
+
+  @approval_ttl_ms 30 * 60 * 1_000
+
+  defp schedule_approval_expiry(%{approval_id: approval_id}) do
+    Process.send_after(self(), {:expire_approval, approval_id}, @approval_ttl_ms)
   end
 
   defp new_id(prefix) do

@@ -578,4 +578,25 @@ defmodule MrEric.RunsTest do
                       %{run_id: ^run_id, approval_id: ^approval_id, reason: :ttl}}, 500
     end
   end
+
+  describe "approval TTL — proactive timer" do
+    test "an unattended approval auto-expires when its timer fires" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+      :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Use tool", owner,
+                 @opts ++ [id: run_id, orchestrator_module: ToolLoopOrchestrator])
+
+      approval_id = await_pending_approval(run_id)
+
+      :ok = MrEric.Runs.RunWorker.test_expire_approval(run_id, approval_id)
+      pid = MrEric.Runs.RunWorker.test_pid(run_id)
+      send(pid, {:expire_approval, approval_id})
+
+      assert_receive {:tool_approval_expired,
+                      %{run_id: ^run_id, approval_id: ^approval_id, reason: :ttl}}, 500
+    end
+  end
 end
