@@ -149,7 +149,7 @@ defmodule MrEric.Evals.SecretChecker do
   defp ignored_key?(k) do
     case k do
       atom when is_atom(atom) -> atom in @ignored_keys
-      binary when is_binary(binary) -> String.to_atom(binary) in @ignored_keys
+      binary when is_binary(binary) -> String.to_existing_atom(binary) in @ignored_keys
       _ -> false
     end
   rescue
