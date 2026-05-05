@@ -150,4 +150,30 @@ defmodule MrEric.Tools.PolicyTest do
                workspace_root: workspace
              )
   end
+
+  describe "secret_path?/1 (public)" do
+    test "true for .env at repo root" do
+      assert MrEric.Tools.Policy.secret_path?(".env")
+    end
+
+    test "true for .env.local" do
+      assert MrEric.Tools.Policy.secret_path?(".env.local")
+    end
+
+    test "true for paths under .git/" do
+      assert MrEric.Tools.Policy.secret_path?(".git/config")
+    end
+
+    test "true for *.pem" do
+      assert MrEric.Tools.Policy.secret_path?("priv/cert/server.pem")
+    end
+
+    test "true for paths whose name contains 'secret'" do
+      assert MrEric.Tools.Policy.secret_path?("priv/secrets/foo.exs")
+    end
+
+    test "false for an ordinary lib file" do
+      refute MrEric.Tools.Policy.secret_path?("lib/mr_eric/agent.ex")
+    end
+  end
 end

@@ -243,7 +243,13 @@ defmodule MrEric.Tools.Policy do
     end
   end
 
-  defp secret_path?(relative) do
+  @doc """
+  Returns true when the given workspace-relative path is considered secret-bearing.
+  Used by `resolve_workspace_path/2` to gate tool access and by `MrEric.RAG.Index`
+  to exclude such files from the lexical index. Single source of truth.
+  """
+  @spec secret_path?(Path.t()) :: boolean()
+  def secret_path?(relative) do
     segments = Path.split(relative)
     basename = Path.basename(relative)
 
