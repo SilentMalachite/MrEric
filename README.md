@@ -47,6 +47,13 @@ git clone https://github.com/SilentMalachite/MrEric.git
 cd MrEric
 ```
 
+ローカルの設定ファイルを準備します:
+
+```bash
+cp .env.example .env
+# 必要なキーを編集 (SECRET_KEY_BASE は dev では空のままで OK — 起動時に乱数生成されます)
+```
+
 利用する provider を選び、必要な環境変数を設定します。
 
 ```bash
@@ -138,6 +145,25 @@ end
 | `git_diff` | `git diff` を実行 | 不要 |
 
 `shell_command` は shell 展開、リダイレクト、破壊的コマンド、mutating git subcommand を拒否します。`git commit`、`git push`、`git reset`、`git clean`、force push は実装していません。
+
+### shell_command の環境変数
+
+`shell_command` ツールは **環境変数の allow-list** を子プロセスに渡します。それ以外の親プロセス環境変数は明示的に削除されるため、`GITHUB_TOKEN`, `DATABASE_URL`, `OPENAI_API_KEY` 等が誤って漏れることはありません。
+
+既定の allow-list:
+
+- `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `TZ`, `TMPDIR`, `SHELL`
+- パターン: `^LC_` (ロケール関連)
+
+`:shell_env_allowlist` で拡張する場合:
+
+```elixir
+config :mr_eric, :shell_env_allowlist,
+  names: ~w(PATH HOME USER LANG LC_ALL TERM TZ TMPDIR SHELL MIX_ENV),
+  patterns: [~r/^LC_/, ~r/^MR_ERIC_/]
+```
+
+設定値が `key`/`token`/`password` などのパターンに一致する場合、起動時に 1 回だけ警告ログが出ます。
 
 ### Orchestrator tool loop
 
