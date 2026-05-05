@@ -556,4 +556,26 @@ defmodule MrEric.RunsTest do
       2_000 -> flunk("no approval observed for run #{run_id}")
     end
   end
+
+  describe "approval TTL — reactive" do
+    test "approve_tool/3 returns :approval_expired and broadcasts when past expires_at" do
+      run_id = unique_run_id()
+      owner = "alice-#{System.unique_integer([:positive])}"
+      :ok = Runs.subscribe(run_id)
+
+      assert {:ok, _run} =
+               Runs.start_run("Use tool", owner,
+                 @opts ++ [id: run_id, orchestrator_module: ToolLoopOrchestrator])
+
+      approval_id = await_pending_approval(run_id)
+
+      :ok = MrEric.Runs.RunWorker.test_expire_approval(run_id, approval_id)
+
+      assert {:error, :approval_expired} =
+               Runs.approve_tool(run_id, approval_id, owner)
+
+      assert_receive {:tool_approval_expired,
+                      %{run_id: ^run_id, approval_id: ^approval_id, reason: :ttl}}, 500
+    end
+  end
 end

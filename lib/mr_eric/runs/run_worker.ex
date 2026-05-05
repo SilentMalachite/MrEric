@@ -87,6 +87,16 @@ defmodule MrEric.Runs.RunWorker do
     end
   end
 
+  @doc false
+  # Test-only: forces the pending approval's expires_at to be in the past
+  # so the next approve/deny call exercises the reactive expiry branch.
+  def test_expire_approval(run_id, approval_id) do
+    case lookup(run_id) do
+      {:ok, pid} -> GenServer.call(pid, {:test_expire_approval, approval_id})
+      :error -> {:error, :not_found}
+    end
+  end
+
   def via(run_id), do: {:via, Registry, {@registry, run_id}}
 
   @impl true
@@ -182,52 +192,76 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_call({:approve_tool, approval_id, owner_id}, _from, state) do
-    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id) do
+    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id),
+         {:ok, request} <- find_pending_approval(state, approval_id),
+         :ok <- check_expiry(request) do
       if Run.terminal?(state.run) do
         {:reply, {:error, :not_found}, %{state | pending_tool_approvals: %{}}}
       else
-        case Map.pop(state.pending_tool_approvals, approval_id) do
-          {nil, _pending} ->
-            {:reply, {:error, :not_found}, state}
+        pending = Map.delete(state.pending_tool_approvals, approval_id)
 
-          {request, pending} ->
-            state =
-              state
-              |> Map.put(:pending_tool_approvals, pending)
-              |> broadcast_tool_approval_resolved(request, true, "Tool request approved.")
+        state =
+          state
+          |> Map.put(:pending_tool_approvals, pending)
+          |> broadcast_tool_approval_resolved(request, true, "Tool request approved.")
 
-            {:reply, :ok, state, {:continue, {:execute_approved_tool, request}}}
-        end
+        {:reply, :ok, state, {:continue, {:execute_approved_tool, request}}}
       end
     else
       {:error, :not_owner} = err ->
         require Logger
         Logger.warning("run #{state.run.id}: approve attempted by non-owner")
         {:reply, err, state}
+
+      {:error, :pending_not_found} ->
+        {:reply, {:error, :not_found}, state}
+
+      {:error, :expired} ->
+        state = drop_expired_approval(state, approval_id, :ttl)
+        {:reply, {:error, :approval_expired}, state}
     end
   end
 
   @impl true
   def handle_call({:deny_tool, approval_id, owner_id}, _from, state) do
-    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id) do
-      case Map.pop(state.pending_tool_approvals, approval_id) do
-        {nil, _pending} ->
-          {:reply, {:error, :not_found}, state}
+    with {:ok, _} <- OwnerCheck.verify(state.run, owner_id),
+         {:ok, request} <- find_pending_approval(state, approval_id),
+         :ok <- check_expiry(request) do
+      pending = Map.delete(state.pending_tool_approvals, approval_id)
 
-        {request, pending} ->
-          state =
-            state
-            |> Map.put(:pending_tool_approvals, pending)
-            |> broadcast_tool_approval_resolved(request, false, "Tool request denied.")
-            |> broadcast_tool_rejected(request, :tool_denied)
+      state =
+        state
+        |> Map.put(:pending_tool_approvals, pending)
+        |> broadcast_tool_approval_resolved(request, false, "Tool request denied.")
+        |> broadcast_tool_rejected(request, :tool_denied)
 
-          {:reply, :ok, state}
-      end
+      {:reply, :ok, state}
     else
       {:error, :not_owner} = err ->
         require Logger
         Logger.warning("run #{state.run.id}: deny attempted by non-owner")
         {:reply, err, state}
+
+      {:error, :pending_not_found} ->
+        {:reply, {:error, :not_found}, state}
+
+      {:error, :expired} ->
+        state = drop_expired_approval(state, approval_id, :ttl)
+        {:reply, {:error, :approval_expired}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:test_expire_approval, approval_id}, _from, state) do
+    case Map.get(state.pending_tool_approvals, approval_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      request ->
+        past = DateTime.add(DateTime.utc_now(), -1, :second)
+        updated = %{request | expires_at: past}
+        state = put_in(state.pending_tool_approvals[approval_id], updated)
+        {:reply, :ok, state}
     end
   end
 
@@ -557,6 +591,34 @@ defmodule MrEric.Runs.RunWorker do
     state
     |> tool_opts(tool_call_id, nil)
     |> Keyword.put(:approval_id, approval_id)
+  end
+
+  defp find_pending_approval(state, approval_id) do
+    case Map.get(state.pending_tool_approvals, approval_id) do
+      nil -> {:error, :pending_not_found}
+      request -> {:ok, request}
+    end
+  end
+
+  defp check_expiry(%{expires_at: %DateTime{} = expires_at}) do
+    if DateTime.compare(DateTime.utc_now(), expires_at) == :gt do
+      {:error, :expired}
+    else
+      :ok
+    end
+  end
+
+  defp check_expiry(_request), do: :ok
+
+  defp drop_expired_approval(state, approval_id, reason) do
+    pending = Map.delete(state.pending_tool_approvals, approval_id)
+
+    {event, payload} =
+      Events.normalize_event(state.run.id,
+        {:tool_approval_expired, %{approval_id: approval_id, reason: reason}})
+
+    Events.broadcast(state.run.id, {event, payload})
+    %{state | pending_tool_approvals: pending}
   end
 
   defp new_id(prefix) do
