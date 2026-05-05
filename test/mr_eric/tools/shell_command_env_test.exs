@@ -1,11 +1,15 @@
 defmodule MrEric.Tools.ShellCommandEnvTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias MrEric.Tools.ShellCommand
 
   setup do
     System.put_env("FAKE_LEAK_TOKEN", "definitely-leaked")
     on_exit(fn -> System.delete_env("FAKE_LEAK_TOKEN") end)
+    # Reset the once-per-boot warn guard so each test gets a clean slate.
+    :persistent_term.erase({MrEric.Tools.ShellCommand, :warned})
     :ok
   end
 
@@ -58,5 +62,20 @@ defmodule MrEric.Tools.ShellCommandEnvTest do
              ShellCommand.run(%{"command" => "sh -c 'echo PATH=$PATH'"}, [])
 
     assert output =~ "/"
+  end
+
+  test "warns once when a configured name looks sensitive" do
+    Application.put_env(:mr_eric, :shell_env_allowlist,
+      names: ~w(PATH GITHUB_TOKEN), patterns: [])
+    on_exit(fn -> Application.delete_env(:mr_eric, :shell_env_allowlist) end)
+    on_exit(fn -> :persistent_term.erase({MrEric.Tools.ShellCommand, :warned}) end)
+
+    log =
+      capture_log(fn ->
+        ShellCommand.run(%{"command" => "sh -c 'echo X'"}, [])
+      end)
+
+    assert log =~ "GITHUB_TOKEN"
+    assert log =~ "likely-sensitive"
   end
 end

@@ -45,7 +45,24 @@ defmodule MrEric.Tools.ShellCommand do
   end
 
   @doc false
-  def build_env do
+  def build_env, do: build_env(:run)
+
+  defp build_env(_mode) do
+    {names, patterns} = resolve_allowlist()
+    maybe_warn(names, patterns)
+    name_set = MapSet.new(names)
+
+    for {key, value} <- System.get_env() do
+      if MapSet.member?(name_set, key) or Enum.any?(patterns, &Regex.match?(&1, key)) do
+        {key, value}
+      else
+        # `nil` tells System.cmd to remove this var from the child env.
+        {key, nil}
+      end
+    end
+  end
+
+  defp resolve_allowlist do
     cfg = Application.get_env(:mr_eric, :shell_env_allowlist, [])
 
     names =
@@ -62,15 +79,33 @@ defmodule MrEric.Tools.ShellCommand do
         list when is_list(list) -> list
       end
 
-    name_set = MapSet.new(names)
+    {names, patterns}
+  end
 
-    for {key, value} <- System.get_env() do
-      if MapSet.member?(name_set, key) or Enum.any?(patterns, &Regex.match?(&1, key)) do
-        {key, value}
-      else
-        # `nil` tells System.cmd to remove this var from the child env.
-        {key, nil}
-      end
+  @sensitive_name_regex ~r/(?i)(key|token|password|secret|credential)/
+
+  defp maybe_warn(names, patterns) do
+    case :persistent_term.get({__MODULE__, :warned}, false) do
+      true ->
+        :ok
+
+      false ->
+        :persistent_term.put({__MODULE__, :warned}, true)
+
+        offenders =
+          Enum.filter(names, &Regex.match?(@sensitive_name_regex, &1)) ++
+            Enum.filter(patterns, &Regex.match?(@sensitive_name_regex, Regex.source(&1)))
+
+        if offenders != [] do
+          require Logger
+
+          Logger.warning(
+            "shell_command env allowlist contains likely-sensitive entries: " <>
+              Enum.map_join(offenders, ", ", &inspect/1)
+          )
+        end
+
+        :ok
     end
   end
 end
