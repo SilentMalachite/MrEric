@@ -81,10 +81,12 @@ defmodule MrEric.Evals.Scorer do
     end
   end
 
+  # Always run the scanner against the *full* actual map (minus pure metadata).
+  # The eval case flag controls whether a finding fails the case.
   defp assert_secret_free(failures, %{expected_no_secret_leak: true}, actual) do
-    case SecretChecker.check(Map.take(actual, [:final, :trace, :drafts, :reviews, :tool_outputs])) do
-      :ok -> failures
-      {:error, _leaks} -> [:secret_leak | failures]
+    case SecretChecker.scan(actual) do
+      %SecretChecker.Result{status: :clean} -> failures
+      %SecretChecker.Result{status: :leak} -> [:secret_leak | failures]
     end
   end
 
