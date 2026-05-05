@@ -105,4 +105,20 @@ defmodule MrEric.RAG.IndexTest do
     paths = Enum.map(index.chunks, & &1.path)
     assert "config/dev.exs" in paths
   end
+
+  test "delegates secret-path detection to Tools.Policy", %{workspace: workspace} do
+    # If a future change to Policy.secret_path?/1 starts treating ".weirdname" as
+    # secret, RAG.Index must automatically pick it up. We model that by patching
+    # the workspace with a basename-pattern Policy already covers (.env.foo) and
+    # confirming it is excluded.
+    File.write!(Path.join(workspace, ".env.foo"), "OPENAI_API_KEY=sk-test")
+
+    assert {:ok, index} = Index.build(workspace_root: workspace)
+    paths = Enum.map(index.chunks, & &1.path)
+
+    refute ".env.foo" in paths
+
+    # Confirm the same path is rejected by Policy directly.
+    assert MrEric.Tools.Policy.secret_path?(".env.foo")
+  end
 end
