@@ -20,6 +20,32 @@ if System.get_env("PHX_SERVER") do
   config :mr_eric, MrEricWeb.Endpoint, server: true
 end
 
+if config_env() in [:dev, :test] do
+  secret_key_base =
+    case System.get_env("SECRET_KEY_BASE") do
+      nil ->
+        IO.puts(
+          :stderr,
+          "[warning] SECRET_KEY_BASE not set; generating a random value for this boot"
+        )
+
+        48 |> :crypto.strong_rand_bytes() |> Base.encode64()
+
+      value when byte_size(value) >= 32 ->
+        value
+
+      _short ->
+        IO.puts(
+          :stderr,
+          "[warning] SECRET_KEY_BASE is shorter than 32 bytes; generating a random value instead"
+        )
+
+        48 |> :crypto.strong_rand_bytes() |> Base.encode64()
+    end
+
+  config :mr_eric, MrEricWeb.Endpoint, secret_key_base: secret_key_base
+end
+
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you

@@ -13,7 +13,6 @@ config :mr_eric, MrEricWeb.Endpoint,
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
-  secret_key_base: "p7muFQmkIZffLy6cyi3HpCr20BQScVNCZz4JRFElUdYmopdw4PDZKlf6AiCB6mKA",
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:mr_eric, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:mr_eric, ~w(--watch)]}

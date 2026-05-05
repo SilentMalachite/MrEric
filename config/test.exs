@@ -4,7 +4,6 @@ import Config
 # you can enable the server option below.
 config :mr_eric, MrEricWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
-  secret_key_base: "ZwGg4I0EEKaSEeRJKR61Q7z278450iDjYWjRMaRHrVeyFtvO74IeQc04yc9g8cc9",
   server: false
 
 # Print only warnings and errors during test
