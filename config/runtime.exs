@@ -48,10 +48,8 @@ end
 
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
+  # In prod we require SECRET_KEY_BASE to be set explicitly; dev/test are
+  # handled in the branch above (env var or per-boot random fallback).
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
       raise """
