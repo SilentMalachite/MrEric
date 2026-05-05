@@ -350,6 +350,16 @@ defmodule MrEricWeb.AgentLiveTest do
     end
   end
 
+  test ":tool_approval_expired removes the approval from the LiveView state",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    send(view.pid, {:tool_approval_expired,
+                    %{run_id: "test-run", approval_id: "ap-1", reason: :ttl}})
+
+    assert render(view) =~ "MrEric AI Agent"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
