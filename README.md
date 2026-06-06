@@ -118,9 +118,16 @@ history = MrEric.get_task_history()
 latest = MrEric.get_latest_task()
 
 # Run 開始、購読、キャンセル
-{:ok, run} = MrEric.Runs.start_run("Build a feature", provider: :ollama, model: "llama3.1")
+# Run は owner_id に束縛され、cancel / approve / deny は同じ owner_id を必要とします。
+# Web UI では MrEric.Plugs.EnsureOwnerId が session ごとに owner_id を発行します。
+owner_id = "owner-123"
+{:ok, run} = MrEric.Runs.start_run("Build a feature", owner_id, provider: :ollama, model: "llama3.1")
 MrEric.Runs.subscribe(run.id)
-MrEric.Runs.cancel_run(run.id)
+MrEric.Runs.cancel_run(run.id, owner_id)
+
+# Tool 承認 / 拒否 (owner_id 必須)
+MrEric.Runs.approve_tool(run.id, approval_id, owner_id)
+MrEric.Runs.deny_tool(run.id, approval_id, owner_id)
 
 # Streaming completion
 MrEric.OpenAIClient.stream_completion("Tell me a story", self(), model: "gpt-4o")
@@ -422,5 +429,5 @@ mix precommit
 
 ---
 
-最終更新: 2026-05-04
+最終更新: 2026-06-07
 バージョン: 0.1.0
