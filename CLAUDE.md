@@ -109,6 +109,15 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
 - `MrEric.LLM.Router` maps an agent spec → provider/model; `MrEric.LLM.Registry` holds the
   provider catalog and defaults. `config/runtime.exs` validates the required env var for the
   selected `AI_PROVIDER` in prod (Ollama/LM Studio need none).
+- **Default provider resolution is local-first.** When neither `:ai_provider` config nor
+  `AI_PROVIDER` is set, `MrEric.LLM.ProviderResolver` runs a boot-time fallback chain
+  (`:provider_fallback_chain`, default `[:lmstudio, :ollama, :openai]`): it health-checks each
+  provider's `/v1/models` and caches the first reachable one in `:resolved_default_provider`.
+  `Registry`/`OpenAICompat` read that cache when no provider is pinned. The chain is probed
+  from `Application.start/2` (after Finch boots) and skipped when a provider is explicit. The
+  terminal entry (`:openai`) is the unconditional fallback and is never probed. Health checks
+  are disabled in test (`config :mr_eric, :provider_health_check, false`) so the default
+  resolves to `:openai` offline.
 - `MrEric.LLM.FakeProvider` is deterministic (same prompt+opts → same output) and is the
   only provider used by `mix mr_eric.evals`. It must never touch the network.
 

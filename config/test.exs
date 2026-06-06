@@ -17,3 +17,7 @@ config :phoenix_live_view,
   enable_expensive_runtime_checks: true
 
 config :mr_eric, :openai_req_options, plug: MrEric.OpenAIMock
+
+# Never probe local LLM endpoints during tests; default-provider resolution
+# falls back to OpenAI so tests stay deterministic and offline.
+config :mr_eric, :provider_health_check, false

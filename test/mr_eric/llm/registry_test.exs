@@ -59,4 +59,27 @@ defmodule MrEric.LLM.RegistryTest do
     assert Registry.default_model(:ollama) == "llama3.1"
     assert Registry.default_model("lmstudio") == "local-model"
   end
+
+  test "default_provider/0 uses the boot-resolved provider when none is pinned" do
+    previous_provider = Application.get_env(:mr_eric, :ai_provider)
+    previous_resolved = Application.get_env(:mr_eric, :resolved_default_provider)
+    Application.delete_env(:mr_eric, :ai_provider)
+    Application.put_env(:mr_eric, :resolved_default_provider, :lmstudio)
+
+    on_exit(fn ->
+      restore_env(:ai_provider, previous_provider)
+      restore_env(:resolved_default_provider, previous_resolved)
+    end)
+
+    # An explicit AI_PROVIDER export on the host always wins over resolution.
+    if System.get_env("AI_PROVIDER") do
+      assert Registry.default_provider() == "openai" or
+               Registry.default_provider() == String.downcase(System.get_env("AI_PROVIDER"))
+    else
+      assert Registry.default_provider() == "lmstudio"
+    end
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:mr_eric, key)
+  defp restore_env(key, value), do: Application.put_env(:mr_eric, key, value)
 end

@@ -89,6 +89,18 @@ MrEric は `MrEric.LLM.OpenAICompat` を通じて、OpenAI 互換の `/v1/chat/c
 
 OpenRouter では任意で `OPENROUTER_SITE_URL` または `SITE_URL`、`OPENROUTER_APP_NAME` を設定できます。本番環境では `config/runtime.exs` が provider ごとの必須環境変数を検証します。
 
+### 既定 provider の自動判定(ローカル優先)
+
+`AI_PROVIDER`(または `:ai_provider` config)を設定しない場合、MrEric は起動時に **ローカル LLM を優先**してフォールバック連鎖で既定 provider を決定します。
+
+1. **LM Studio**(`http://localhost:1234/v1`)— 起動していればこれを採用
+2. **Ollama**(`http://localhost:11434/v1`)— 上が不可なら次に採用
+3. **OpenAI** — どちらも不可なら最終フォールバック(到達確認はしない)
+
+判定は `MrEric.LLM.ProviderResolver` が `MrEric.Application` 起動時に各 `/v1/models` へ短い timeout でヘルスチェックを行い、結果を application env にキャッシュします。連鎖は `config :mr_eric, :provider_fallback_chain` で上書きでき、`config :mr_eric, :provider_health_check, false` でヘルスチェックを無効化できます(test 環境では既定で無効)。
+
+`AI_PROVIDER` を明示した場合は連鎖をスキップし、その provider を使います。
+
 リクエスト単位でも provider と model を指定できます。
 
 ```elixir
@@ -320,6 +332,7 @@ MrEric/
 | `MrEric.Runs.Trace` | sanitized trace、duration、error classification、changed files を記録 |
 | `MrEric.Orchestrator` | Planner、Draft Agents、Reviewers、Synthesizer と tool loop を調整 |
 | `MrEric.LLM.Router` | agent spec から provider/model へ routing |
+| `MrEric.LLM.ProviderResolver` | 起動時のローカル優先フォールバック連鎖で既定 provider を判定 |
 | `MrEric.LLM.OpenAICompat` | OpenAI 互換 provider 実装 |
 | `MrEric.LLM.FakeProvider` | deterministic test/eval provider |
 | `MrEric.Tools` | built-in tools、policy、approval、patch validation |

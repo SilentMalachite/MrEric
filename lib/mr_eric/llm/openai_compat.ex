@@ -195,7 +195,8 @@ defmodule MrEric.LLM.OpenAICompat do
   end
 
   defp configured_provider do
-    Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || "openai"
+    Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") ||
+      MrEric.LLM.ProviderResolver.default_provider()
   end
 
   defp normalize_provider(provider) when provider in [nil, ""],

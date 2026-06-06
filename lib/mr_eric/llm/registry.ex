@@ -205,7 +205,8 @@ defmodule MrEric.LLM.Registry do
   defp role_name(:synthesizer), do: :synthesizer
 
   defp configured_provider do
-    Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") || :openai
+    Application.get_env(:mr_eric, :ai_provider) || System.get_env("AI_PROVIDER") ||
+      MrEric.LLM.ProviderResolver.default_provider()
   end
 
   defp provider_id(provider) when provider in [nil, ""], do: default_provider()

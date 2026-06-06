@@ -38,6 +38,9 @@ npm-debug.log
 # Mac
 .DS_Store
 
+# Serena (local semantic-code tooling cache/config)
+/.serena/
+
 # Environment files (may contain secrets)
 .env
 .env.*

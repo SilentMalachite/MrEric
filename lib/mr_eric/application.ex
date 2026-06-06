@@ -24,7 +24,19 @@ defmodule MrEric.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: MrEric.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      # Finch is up now, so probe the local-first provider fallback chain and
+      # cache the default. Skipped when a provider is pinned explicitly.
+      maybe_resolve_default_provider()
+      {:ok, pid}
+    end
+  end
+
+  defp maybe_resolve_default_provider do
+    unless MrEric.LLM.ProviderResolver.explicit_provider_configured?() do
+      MrEric.LLM.ProviderResolver.resolve_and_cache()
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration
