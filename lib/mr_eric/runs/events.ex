@@ -19,7 +19,11 @@ defmodule MrEric.Runs.Events do
     :tool_completed,
     :tool_failed,
     :tool_denied,
-    :tool_rejected
+    :tool_rejected,
+    # RAG failure never fails a run -- the planner proceeds with empty context
+    # -- but it used to say nothing at all, so "RAG broke" and "RAG found
+    # nothing" were the same observation.
+    :rag_failed
   ]
 
   def names, do: @event_names
@@ -117,7 +121,14 @@ defmodule MrEric.Runs.Events do
   # `:error_class` is safe to broadcast: `classify/1` only ever returns a
   # member of the closed `MrEric.Errors.classifications/0` list.
   defp sanitize_payload(payload, event)
-       when event in [:stage_failed, :run_failed, :tool_failed, :tool_denied, :tool_rejected] do
+       when event in [
+              :stage_failed,
+              :run_failed,
+              :tool_failed,
+              :tool_denied,
+              :tool_rejected,
+              :rag_failed
+            ] do
     error = Map.get(payload, :error) || Map.get(payload, :reason) || Map.get(payload, :value)
 
     payload

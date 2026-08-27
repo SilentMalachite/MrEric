@@ -161,7 +161,14 @@ defmodule MrEric.Runs.Trace do
   end
 
   defp error_classification(event, payload)
-       when event in [:run_failed, :stage_failed, :tool_failed, :tool_denied, :tool_rejected] do
+       when event in [
+              :run_failed,
+              :stage_failed,
+              :tool_failed,
+              :tool_denied,
+              :tool_rejected,
+              :rag_failed
+            ] do
     classify(payload, payload)
   end
 
