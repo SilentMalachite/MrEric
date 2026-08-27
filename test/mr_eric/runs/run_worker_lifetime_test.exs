@@ -26,13 +26,25 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
   @reap_opts [terminal_run_ttl_ms: 30, skip_history: true]
 
+  # These are timeout margins, not timing assertions: every wait below is on a
+  # timer of tens of milliseconds, so a generous budget costs nothing on the
+  # happy path and buys immunity to CPU contention on a loaded machine. Under
+  # 3x core oversubscription a 1_000 ms budget flaked on roughly a quarter of
+  # seeds — always "the right message arrived too late", never a wrong ordering.
+  @wait_ms 5_000
+
+  # Two tests below need real work to happen *inside* the hard-deadline window
+  # rather than merely waiting for it, so they trade the 30 ms window the other
+  # deadline tests use for a 300 ms one.
+  @wide_deadline_opts [max_total_runtime_ms: 200, hard_deadline_grace_ms: 100]
+
   test "stops the worker after a completed run's grace period" do
     {_run, pid} = start_worker(@reap_opts)
     ref = Process.monitor(pid)
 
     send(pid, {:run_completed, %{final: "done"}})
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
   end
 
   test "stops the worker after a failed run's grace period" do
@@ -41,7 +53,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
     send(pid, {:run_failed, %{error: :boom}})
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
   end
 
   test "stops the worker after a cancelled run's grace period" do
@@ -50,7 +62,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
     assert :ok = RunWorker.cancel(pid, "lifetime-owner")
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
   end
 
   test "never reaps a run that has not reached a terminal status" do
@@ -95,7 +107,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     ref = Process.monitor(pid)
     send(pid, {:run_completed, %{final: "recorded"}})
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
     assert [%{final: "recorded"}] = MrEric.Agent.history(agent_name)
   end
 
@@ -123,7 +135,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     pid = RunWorker.test_pid(first_id)
     ref = Process.monitor(pid)
     assert :ok = Runs.cancel_run(first_id, "lifetime-owner")
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
 
     assert {:ok, _run} =
              Runs.start_run(
@@ -153,7 +165,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
         name: nil
       )
 
-    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, 1_000
+    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, @wait_ms
     assert message =~ "maximum lifetime"
 
     assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
@@ -168,20 +180,24 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     {:ok, pid} =
       RunWorker.start_link(
         run: run,
-        opts: [
-          max_total_runtime_ms: 20,
-          hard_deadline_grace_ms: 10,
-          terminal_run_ttl_ms: 5_000,
-          skip_history: true
-        ],
+        opts:
+          @wide_deadline_opts ++
+            [
+              terminal_run_ttl_ms: 5_000,
+              skip_history: true
+            ],
         auto_start: false,
         name: nil
       )
 
+    # The completion has to land before the hard deadline for this test to be
+    # about inertness at all; @wide_deadline_opts gives it 300 ms to do so.
     send(pid, {:run_completed, %{final: "fast"}})
-    assert_receive {:run_completed, %{run_id: ^run_id}}, 1_000
+    assert_receive {:run_completed, %{run_id: ^run_id}}, @wait_ms
 
-    refute_receive {:run_failed, %{run_id: ^run_id}}, 300
+    # Longer than the 300 ms deadline, so the deadline provably fired and found
+    # the run already terminal instead of simply not having fired yet.
+    refute_receive {:run_failed, %{run_id: ^run_id}}, 600
     assert {:ok, %Run{status: :completed}} = RunWorker.get_run(pid)
   end
 
@@ -203,7 +219,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
     pid = RunWorker.test_pid(first_id)
     ref = Process.monitor(pid)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
 
     assert {:ok, _run} =
              Runs.start_run(
@@ -222,19 +238,21 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     {:ok, pid} =
       RunWorker.start_link(
         run: run,
-        opts: [
-          max_total_runtime_ms: 20,
-          hard_deadline_grace_ms: 10,
-          terminal_run_ttl_ms: 5_000,
-          skip_history: true
-        ],
+        opts:
+          @wide_deadline_opts ++
+            [
+              terminal_run_ttl_ms: 5_000,
+              skip_history: true
+            ],
         auto_start: false,
         name: nil
       )
 
+    # Has to observe the run *before* the deadline fires; @wide_deadline_opts
+    # gives it 300 ms rather than 30 ms to get here.
     refute Run.terminal?(elem(RunWorker.get_run(pid), 1))
 
-    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, 1_000
+    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, @wait_ms
     assert message =~ "maximum lifetime"
 
     assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
@@ -263,7 +281,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
         name: nil
       )
 
-    assert_receive {:run_failed, %{run_id: ^run_id, error: _message}}, 1_000
+    assert_receive {:run_failed, %{run_id: ^run_id, error: _message}}, @wait_ms
 
     # Simulate the doomed orchestrator task's :run_completed landing in the
     # worker's mailbox just after :hard_deadline was already processed and
