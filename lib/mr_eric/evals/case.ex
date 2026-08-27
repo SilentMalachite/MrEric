@@ -72,25 +72,41 @@ defmodule MrEric.Evals.Case do
     "unknown" => :unknown
   }
 
-  def from_map(map) when is_map(map) do
+  @requirements ~w(rag mcp)
+
+  @doc """
+  Builds a case from its JSON map, raising on any value it cannot recognize.
+
+  Golden cases are fixtures in this repository, not user input. An *absent*
+  optional field means "this case does not assert that", which is legal; a
+  *present but unrecognized* one means the fixture is wrong. Lenient parsing
+  used to turn the second into the first -- an unknown event name was dropped
+  from the list, an unknown classification became `nil`, which is the value
+  that switches `Scorer.assert_error_classification/3` off -- so a typo made
+  the suite assert less and still report green.
+  """
+  def from_map!(map) when is_map(map) do
+    name = string_field(map, "name")
+
     %__MODULE__{
-      name: string_field(map, "name"),
+      name: name,
       task: string_field(map, "task"),
       scenario: string_field(map, "scenario"),
-      approval_action: approval_action(Map.get(map, "approval_action")),
+      approval_action: approval_action!(name, Map.get(map, "approval_action")),
       cancel_after_ms: Map.get(map, "cancel_after_ms"),
       fail_role: Map.get(map, "fail_role"),
-      requires: list_field(map, "requires"),
-      expected_status: status(Map.get(map, "expected_status")),
+      requires: requires!(name, Map.get(map, "requires")),
+      expected_status: status!(name, Map.get(map, "expected_status")),
       expected_final_contains: list_field(map, "expected_final_contains"),
-      expected_events: events(Map.get(map, "expected_events")),
-      forbidden_events: events(Map.get(map, "forbidden_events")),
+      expected_events: events!(name, "expected_events", Map.get(map, "expected_events")),
+      forbidden_events: events!(name, "forbidden_events", Map.get(map, "forbidden_events")),
       expected_no_secret_leak: Map.get(map, "expected_no_secret_leak", true),
       expected_approval_required: Map.get(map, "expected_approval_required", false),
       expected_tool_denied: Map.get(map, "expected_tool_denied", false),
       expected_tool_rejected: Map.get(map, "expected_tool_rejected", false),
       expected_patch_applied: Map.get(map, "expected_patch_applied"),
-      expected_error_classification: classification(Map.get(map, "expected_error_classification"))
+      expected_error_classification:
+        classification!(name, Map.get(map, "expected_error_classification"))
     }
   end
 
@@ -109,8 +125,6 @@ defmodule MrEric.Evals.Case do
          function_exported?(MrEric.MCP.ToolAdapter, :module_info, 0))
   end
 
-  defp requirement_available?(_requirement), do: false
-
   defp string_field(map, field), do: Map.get(map, field) || ""
 
   defp list_field(map, field) do
@@ -121,27 +135,79 @@ defmodule MrEric.Evals.Case do
     end
   end
 
-  defp status(value) when is_binary(value), do: Map.get(@statuses, value, :completed)
-  defp status(value) when is_atom(value), do: value
-  defp status(_value), do: :completed
+  defp status!(_name, nil), do: :completed
+  defp status!(_name, value) when is_atom(value), do: value
 
-  defp events(values) when is_list(values) do
-    values
-    |> Enum.map(fn
-      value when is_atom(value) -> value
-      value when is_binary(value) -> Map.get(@events, value)
-      _value -> nil
-    end)
-    |> Enum.reject(&is_nil/1)
+  defp status!(name, value) when is_binary(value) do
+    case Map.fetch(@statuses, value) do
+      {:ok, status} -> status
+      :error -> bad!(name, "expected_status", value, Map.keys(@statuses))
+    end
   end
 
-  defp events(_values), do: []
+  defp status!(name, value), do: bad!(name, "expected_status", value, Map.keys(@statuses))
 
-  defp approval_action(value) when is_binary(value), do: Map.get(@approval_actions, value)
-  defp approval_action(value) when is_atom(value), do: value
-  defp approval_action(_value), do: nil
+  defp events!(_name, _field, nil), do: []
 
-  defp classification(value) when is_binary(value), do: Map.get(@classifications, value)
-  defp classification(value) when is_atom(value), do: value
-  defp classification(_value), do: nil
+  defp events!(name, field, values) when is_list(values) do
+    Enum.map(values, fn
+      value when is_atom(value) ->
+        value
+
+      value when is_binary(value) ->
+        case Map.fetch(@events, value) do
+          {:ok, event} -> event
+          :error -> bad!(name, field, value, Map.keys(@events))
+        end
+
+      value ->
+        bad!(name, field, value, Map.keys(@events))
+    end)
+  end
+
+  defp events!(name, field, value), do: bad!(name, field, value, Map.keys(@events))
+
+  defp approval_action!(_name, nil), do: nil
+  defp approval_action!(_name, value) when is_atom(value), do: value
+
+  defp approval_action!(name, value) when is_binary(value) do
+    case Map.fetch(@approval_actions, value) do
+      {:ok, action} -> action
+      :error -> bad!(name, "approval_action", value, Map.keys(@approval_actions))
+    end
+  end
+
+  defp approval_action!(name, value),
+    do: bad!(name, "approval_action", value, Map.keys(@approval_actions))
+
+  defp classification!(_name, nil), do: nil
+  defp classification!(_name, value) when is_atom(value), do: value
+
+  defp classification!(name, value) when is_binary(value) do
+    case Map.fetch(@classifications, value) do
+      {:ok, classification} -> classification
+      :error -> bad!(name, "expected_error_classification", value, Map.keys(@classifications))
+    end
+  end
+
+  defp classification!(name, value),
+    do: bad!(name, "expected_error_classification", value, Map.keys(@classifications))
+
+  defp requires!(_name, nil), do: []
+
+  defp requires!(name, values) when is_list(values) do
+    Enum.map(values, fn
+      value when is_binary(value) and value in @requirements -> value
+      value -> bad!(name, "requires", value, @requirements)
+    end)
+  end
+
+  defp requires!(name, value) when is_binary(value), do: requires!(name, [value])
+  defp requires!(name, value), do: bad!(name, "requires", value, @requirements)
+
+  defp bad!(case_name, field, value, allowed) do
+    raise ArgumentError,
+          "golden eval case #{inspect(case_name)}: unrecognized #{field} #{inspect(value)}. " <>
+            "Allowed: #{Enum.map_join(Enum.sort(allowed), ", ", &inspect/1)}"
+  end
 end

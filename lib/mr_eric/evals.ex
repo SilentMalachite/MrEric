@@ -13,7 +13,7 @@ defmodule MrEric.Evals do
     |> eval_file()
     |> File.read!()
     |> Jason.decode!()
-    |> Enum.map(&EvalCase.from_map/1)
+    |> Enum.map(&EvalCase.from_map!/1)
     |> Enum.filter(&EvalCase.enabled?/1)
   end
 
