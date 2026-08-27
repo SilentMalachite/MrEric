@@ -2,10 +2,19 @@ defmodule MrEric.Tools.ShellCommand do
   @moduledoc """
   Runs an approved shell command from the workspace root.
 
+  The command is executed as a direct argv vector — there is no shell process
+  between `MrEric.Tools.Policy` and the program, so nothing re-parses the
+  command string under a second grammar and no login-shell profile is sourced.
+  `Policy.command_argv/1` produces the argv, and it is the same tokenizer
+  `Policy.authorize/3` validated with.
+
+  `run/2` re-runs `Policy.authorize/3` itself. The tool is therefore safe when
+  called directly and not only when brokered through `MrEric.Tools.Executor`.
+
   The child process inherits only environment variables on the configured
-  allow-list. Every other parent env var is explicitly unset (System.cmd
-  honours nil values as removals). Defaults are intentionally minimal;
-  expand via `config :mr_eric, :shell_env_allowlist, names: [...], patterns: [...]`.
+  allow-list. Every other parent env var is explicitly unset (`System.cmd/3`
+  honours nil values as removals). Defaults are intentionally minimal; expand
+  via `config :mr_eric, :shell_env_allowlist, names: [...], patterns: [...]`.
   """
 
   @behaviour MrEric.Tools.Tool
@@ -28,20 +37,37 @@ defmodule MrEric.Tools.ShellCommand do
 
   @impl true
   def run(args, opts) do
-    command = Policy.arg(args, :command) |> to_string()
-    workspace = Policy.workspace_root(opts)
-    env = build_env()
+    args = Policy.normalize_args(args)
 
-    {output, exit_status} =
-      System.cmd("sh", ["-lc", command],
-        cd: workspace,
-        stderr_to_stdout: true,
-        env: env
-      )
+    with {:ok, _decision} <- Policy.authorize(:shell_command, args, opts),
+         {:ok, command} <- fetch_command(args),
+         {:ok, [program | argv]} <- Policy.command_argv(command),
+         {:ok, executable} <- resolve_executable(program) do
+      {output, exit_status} =
+        System.cmd(executable, argv,
+          cd: Policy.workspace_root(opts),
+          stderr_to_stdout: true,
+          env: build_env()
+        )
 
-    {:ok, %{command: command, output: output, exit_status: exit_status}}
+      {:ok, %{command: command, output: output, exit_status: exit_status}}
+    end
   rescue
     error -> {:error, Exception.message(error)}
+  end
+
+  defp fetch_command(args) do
+    case Policy.arg(args, :command) do
+      command when is_binary(command) -> {:ok, String.trim(command)}
+      _other -> {:error, :invalid_args}
+    end
+  end
+
+  defp resolve_executable(program) do
+    case System.find_executable(program) do
+      nil -> {:error, :dangerous_command}
+      path -> {:ok, path}
+    end
   end
 
   @doc false
