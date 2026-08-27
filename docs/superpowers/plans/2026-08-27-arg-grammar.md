@@ -329,7 +329,16 @@ Implements Spec Section 2.
 
 Run: `mix test test/mr_eric/tools/policy_test.exs`
 
-Expected: the first test FAILS on `sed -E -i.bak` and `sed --in-place=.bak`. `sed -i.bak` and `sed -n -i` already fail closed via `@dangerous_command_patterns` — confirm that, because it tells you the string deny-list is still doing its job. The read-only guard PASSES.
+Expected: the first test FAILS. Measured on `main` at `38a309e`, three of its four forms are allowed today and only one is blocked:
+
+| Command | Today |
+|---------|-------|
+| `sed -E -i.bak s/foo/bar/ README.md` | **ALLOWED** |
+| `sed --in-place=.bak s/foo/bar/ README.md` | **ALLOWED** |
+| `sed -n -i s/foo/bar/ README.md` | **ALLOWED** |
+| `sed -i.bak s/foo/bar/ README.md` | `{:error, :dangerous_command}` |
+
+Only the last one is adjacent enough for `~r/(^|\s)sed\s+-i/` to fire — that is the positional weakness this task removes. The read-only guard (`sed -n 1,5p`) PASSES.
 
 - [ ] **Step 3: Implement the argv stage**
 

@@ -168,6 +168,29 @@ defmodule MrEric.Tools.PolicyTest do
              )
   end
 
+  describe "mutating options (Spec C-1)" do
+    test "rejects sed -i however it is spelled or ordered", %{workspace: workspace} do
+      for command <- [
+            "sed -E -i.bak s/foo/bar/ README.md",
+            "sed --in-place=.bak s/foo/bar/ README.md",
+            "sed -i.bak s/foo/bar/ README.md",
+            "sed -n -i s/foo/bar/ README.md"
+          ] do
+        assert {:error, :dangerous_command} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 )
+      end
+    end
+
+    test "still allows read-only sed", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "sed -n 1,5p README.md"},
+                 workspace_root: workspace
+               )
+    end
+  end
+
   describe "option-attached paths (Spec C-1)" do
     test "rejects a relative attached short-option path", %{workspace: workspace} do
       assert {:error, :outside_workspace} =

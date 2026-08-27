@@ -17,6 +17,17 @@ defmodule MrEric.Tools.Policy do
   # default, so `.GIT/config` reaches the same bytes as `.git/config`.
   @protected_dir_segments ~w(.git .ssh)
 
+  # Options that make an otherwise read-only program write. Matched against the
+  # argv vector, so option order cannot defeat them the way it defeats the
+  # positional patterns in @dangerous_command_patterns (`sed -E -i` slips past
+  # `~r/(^|\s)sed\s+-i/`, `sed -i` does not).
+  #
+  # Adding a program to @allowed_shell_commands requires an entry here, or a
+  # written argument in the spec for why the program has no mutating options.
+  @mutating_options %{
+    "sed" => [~r/^-{1,2}i/, ~r/^--in-place/]
+  }
+
   @forbidden_shell_syntax [
     ~r/[;&|$`\\'"(){}\[\]*?<>~!]/,
     ~r/\n/
@@ -159,6 +170,7 @@ defmodule MrEric.Tools.Policy do
 
     with {:ok, command} <- normalize_command(command),
          :ok <- ensure_safe_command(command),
+         :ok <- ensure_program_options_allowed(command),
          :ok <- ensure_command_paths_allowed(command, opts) do
       {:ok,
        %{
@@ -330,6 +342,20 @@ defmodule MrEric.Tools.Policy do
   end
 
   defp git_subcommand([]), do: nil
+
+  # Runs before the path check so a mutating option is reported as
+  # :dangerous_command rather than as whatever its argument happens to resolve to.
+  defp ensure_program_options_allowed(command) do
+    with {:ok, [program | args]} <- command_argv(command) do
+      denied = Map.get(@mutating_options, program, [])
+
+      if Enum.any?(args, fn arg -> Enum.any?(denied, &Regex.match?(&1, arg)) end) do
+        {:error, :dangerous_command}
+      else
+        :ok
+      end
+    end
+  end
 
   defp ensure_command_paths_allowed(command, opts) do
     with {:ok, tokens} <- command_argv(command) do
