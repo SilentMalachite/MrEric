@@ -107,10 +107,22 @@ defmodule MrEric.Runs.Events do
   defp normalize_payload(payload) when is_map(payload), do: payload
   defp normalize_payload(payload), do: %{value: payload}
 
+  # This is the last point at which the raw reason still exists: `:error`
+  # leaves here as a sentence written for a human, and recovering a
+  # classification from that sentence downstream is keyword-matching against
+  # English -- `:run_lifetime_exceeded` becomes "The run exceeded its maximum
+  # lifetime and was stopped.", which contains no keyword any classifier looks
+  # for, so it classified as `:unknown`. `MrEric.Errors.classify/1` knows the
+  # atom exactly, so the classification is taken here and carried alongside.
+  # `:error_class` is safe to broadcast: `classify/1` only ever returns a
+  # member of the closed `MrEric.Errors.classifications/0` list.
   defp sanitize_payload(payload, event)
        when event in [:stage_failed, :run_failed, :tool_failed, :tool_denied, :tool_rejected] do
     error = Map.get(payload, :error) || Map.get(payload, :reason) || Map.get(payload, :value)
-    Map.put(payload, :error, public_error(error))
+
+    payload
+    |> Map.put(:error, public_error(error))
+    |> Map.put(:error_class, MrEric.Errors.classify(error))
   end
 
   defp sanitize_payload(payload, _event), do: payload
