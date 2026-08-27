@@ -182,6 +182,11 @@ defmodule MrEric.Tools.Policy do
     },
     # `--pre`, `--hostname-bin` (execute a program), `-L` / `--follow`
     # (leave the workspace via symlinks) are absent on purpose.
+    #
+    # So are `--hidden` and `-u` / `--unrestricted`: they exist to defeat rg's
+    # default skipping of hidden and gitignored files, which is what keeps
+    # `rg <term> .` from reading `.env`. `grep -r` has no such default and its
+    # exposure is recorded in the spec's Section 4 as an accepted gap.
     "rg" => %{
       short: %{
         "n" => :flag,
@@ -195,7 +200,6 @@ defmodule MrEric.Tools.Policy do
         "F" => :flag,
         "S" => :flag,
         "s" => :flag,
-        "u" => :flag,
         "H" => :flag,
         "e" => :pattern,
         "f" => :path_pattern_source,
@@ -216,7 +220,6 @@ defmodule MrEric.Tools.Policy do
         "--max-count" => :literal,
         "--no-heading" => :flag,
         "--line-number" => :flag,
-        "--hidden" => :flag,
         "--fixed-strings" => :flag,
         "--ignore-case" => :flag,
         "--word-regexp" => :flag,

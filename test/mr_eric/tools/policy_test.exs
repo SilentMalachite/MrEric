@@ -432,6 +432,12 @@ defmodule MrEric.Tools.PolicyTest do
             "rg --hostname-bin=./hook needle f.txt",
             "rg -L needle .",
             "rg --follow needle .",
+            # These exist only to defeat rg's default skipping of hidden and
+            # gitignored files, which is what keeps `rg <term> .` off `.env`.
+            "rg --hidden needle .",
+            "rg -u needle .",
+            "rg -uu needle .",
+            "rg --unrestricted needle .",
             "ls -LR .",
             # -R dereferences symlinks on GNU grep / ugrep; -r does not.
             "grep -R needle .",

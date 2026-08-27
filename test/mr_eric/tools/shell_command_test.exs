@@ -220,6 +220,42 @@ defmodule MrEric.Tools.ShellCommandTest do
                ShellCommand.run(%{command: "ls -LR ."}, workspace_root: workspace)
     end
 
+    # --- Accepted gap, recorded in spec Section 4 ---
+    #
+    # `secret_path?/1` only reaches paths that appear as command tokens; it has
+    # no reach into a program's own directory walk. `rg` is safe here because it
+    # skips hidden and gitignored files by default, and the options that defeat
+    # that default (`--hidden`, `-u`) are absent from the grammar. `grep -r` has
+    # no such default, so it CAN read `.env` inside the workspace.
+    #
+    # This test pins that asymmetry so it stays a decision. If it starts
+    # failing, the boundary changed and the spec must change with it.
+    test "rg's defaults keep it off secret files; grep -r is the accepted gap", %{
+      workspace: workspace
+    } do
+      File.write!(Path.join(workspace, ".env"), "AKIA_FAKE_TEST_VALUE=xyz\n")
+
+      assert {:error, :secret_file} =
+               ShellCommand.run(%{command: "cat .env"}, workspace_root: workspace)
+
+      assert {:ok, %{output: rg_output}} =
+               ShellCommand.run(%{command: "rg -n AKIA_FAKE ."}, workspace_root: workspace)
+
+      refute rg_output =~ "AKIA_FAKE_TEST_VALUE",
+             "rg default should skip hidden files; if this fails the grammar gained --hidden or -u"
+
+      for command <- ["rg --hidden -n AKIA_FAKE .", "rg -uu -n AKIA_FAKE ."] do
+        assert {:error, :dangerous_command} =
+                 ShellCommand.run(%{command: command}, workspace_root: workspace)
+      end
+
+      # Accepted: grep -r reads it. Documented in the spec, not an oversight.
+      assert {:ok, %{output: grep_output}} =
+               ShellCommand.run(%{command: "grep -rn AKIA_FAKE ."}, workspace_root: workspace)
+
+      assert grep_output =~ "AKIA_FAKE_TEST_VALUE"
+    end
+
     test "grep -R cannot dereference symlinks out of the workspace", %{workspace: workspace} do
       outside = outside_dir()
       File.write!(Path.join(outside, "SECRET.txt"), "OUTSIDE_ONLY\n")
