@@ -9,20 +9,14 @@
 | C | tool 境界（`sh -lc` 廃止、`.git`/`.ssh` の case-fold、TOCTOU 再検証） | **Implemented**（2026-08-27, `main`） | [spec](./specs/2026-08-27-tool-boundary-design.md) · [plan](./plans/2026-08-27-tool-boundary.md) |
 | C-1 | コマンド引数文法（プログラム別 grammar allow-list、bundled 短オプション、値種別、`--`、`sed` 削除） | **Implemented**（2026-08-27, rev 2） | [spec](./specs/2026-08-27-arg-grammar-design.md) · [plan](./plans/2026-08-27-arg-grammar.md) |
 | D | Run 寿命と資源（`max_children`、worker の回収と絶対期限、trace / 履歴上限） | **Implemented**（2026-08-27, `main`） | [spec](./specs/2026-08-27-run-lifetime-design.md) · [plan](./plans/2026-08-27-run-lifetime.md) |
-| E | eval / RAG の正しさ（scorer early-pass、RAG キャッシュ、`rag_default_index` golden case） | **Designed**（2026-08-28、実装は未着手） | [spec](./specs/2026-08-28-eval-rag-correctness-design.md) |
+| E | eval / RAG の正しさ（scorer early-pass、RAG キャッシュ、`rag_default_index` golden case） | **Implemented**（2026-08-28, `main`） | [spec](./specs/2026-08-28-eval-rag-correctness-design.md) · [plan](./plans/2026-08-28-eval-rag-correctness.md) |
 | F | 本番 HTTP（`force_ssl`、HSTS、CSP、`PHX_HOST` hard-fail） | 未着手 | — |
 
 ## 次にやる作業
 
-**Spec E の実装**が次です。設計は
-[2026-08-28-eval-rag-correctness-design.md](./specs/2026-08-28-eval-rag-correctness-design.md)
-に確定済みで、実装計画はこれから書きます。
-
-Spec D で run の同時実行数・worker 寿命・trace / 履歴の上限が閉じたので、承認ゲートの後ろに残る
-運用面の穴はありません。Spec E が閉じるのは別種の穴です — 境界を証明するはずのハーネスが実際には
-何も証明していない、という穴。期待値が黙って消える scorer の early-pass、無音で縮む eval スイート、
-毎回作り直される RAG 索引、無音で潰される RAG 失敗、そして Spec A から先送りされた
-`rag_default_index` golden case です。
+**Spec F** が次です。Spec E で eval ハーネスが「主張したことを実際に検証する」状態になり、
+RAG 索引のキャッシュと `:rag_failed` の可視化も入りました。残るのは本番 HTTP
+（`force_ssl`、HSTS、CSP、`PHX_HOST` の hard-fail）だけです。
 
 ## 対象外（明示的に止める）
 

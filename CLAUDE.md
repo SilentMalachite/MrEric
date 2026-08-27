@@ -183,6 +183,20 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   sanitized traces; `MrEric.Errors` classifies errors into safe messages;
   `MrEric.Evals.SecretChecker` scans outputs for leaked secrets. RAG/MCP evals run only when
   those modules are present.
+- **A golden case cannot assert less than it reads.** `Evals.Case.from_map!/1`
+  raises on an unrecognized status, event name, classification, approval action,
+  or requirement — an absent optional field means "does not assert that", a
+  present-but-unrecognized one means the fixture is wrong. `Scorer.score/2`
+  refuses to score an `actual` without a readable `%Trace{}`, reporting
+  `:missing_trace`, because `Enum.any?([], _)` is `false` and used to make
+  `forbidden_events` pass precisely when nothing was observable. `Evals.run_all/1`
+  reports `skipped` by name and reason; `list_cases/0` no longer filters.
+- **`actual` carries the planner stage.** `SecretChecker` walks `actual` by
+  denylist, so a field that is not there is never scanned — and the planner
+  prompt is where RAG context lands. Note that this is a *second* line of
+  defence, not the first: `Events.normalize_event/2` runs `redact_secrets/1`
+  over every binary in a `stage_completed` payload, so a secret-shaped string
+  is already masked by the time `Run.stages` holds it.
 
 ### RAG and MCP are deliberately minimal
 - `MrEric.RAG` is an in-memory **lexical** index over safe workspace text files (reusing
@@ -190,6 +204,25 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   RAG failures must not fail a run.
 - `MrEric.MCP` is **interface-level only** (`ClientBehaviour`, `ToolAdapter`). No external MCP
   server config, process startup, discovery, proxy, or UI — do not add them unless scoped.
+- **The RAG index is cached, bounded by bytes.** `MrEric.RAG.Cache` owns an ETS
+  table; reads run in the calling process and building stays in the caller, never
+  in the GenServer. `Index.fingerprint/1` identifies the tree with an lstat-only
+  walk, so an unchanged workspace is never rebuilt and a changed one always is.
+  **`allow_secret_paths` is part of the cache key** — it is the only way a cache
+  could serve a secret-inclusive index to a caller that asked for the safe one.
+  The bound is `max_cached_index_bytes` / `max_cached_total_bytes`, not a chunk
+  count: measured, the term maps are 75 % of an index, so a count is not a memory
+  bound — the same lesson `max_trace_entries` taught in Spec D.
+- **`Retriever` scores from precomputed `:terms` and applies `exact_bonus` only to
+  chunks that already scored.** That is sound because `exact_bonus > 0` implies
+  `lexical_score > 0`. Note that `tokenize/1` uniqs before frequencies are taken,
+  so every term count is `1` and the score counts *distinct* query tokens; do not
+  "fix" that into occurrence counting without treating it as a ranking change.
+- **RAG failure is visible.** The orchestrator emits `:rag_failed` and continues
+  with empty context. It still never fails a run. The payload's `:error` carries
+  the `:rag_failed` sentinel, never the raw reason: the reason can hold a secret
+  and `send_event/4` does not sanitize, and `Errors.classify/1` on an arbitrary
+  string keyword-matches English and answers `:unknown`.
 
 ## Web layer
 - Single LiveView: `MrEricWeb.AgentLive` at `/` — Run UI, tool/patch approval controls.

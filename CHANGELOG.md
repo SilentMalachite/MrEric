@@ -11,11 +11,24 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は、Spec A–D が `main` に入っており、残りは Spec E–F です。
+監査由来のセキュリティ hardening は、Spec A–E が `main` に入っており、残りは Spec F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
 
+- eval / RAG の正しさを修正（Spec E、2026-08-28）。
+  - `Evals.Case.from_map!/1` が未知の期待値で raise。綴り違いが「より弱い主張」に
+    黙って化けなくなった。
+  - `Scorer` が trace を読めない `actual` を `:missing_trace` として落とす。
+    `forbidden_events` が空振りで通る経路を閉じた。
+  - `Evals.run_all/1` と `mix mr_eric.evals` が skipped を名前と理由付きで報告。
+  - `actual` に planner ステージを追加し、SecretChecker の走査対象にした。
+  - `MrEric.RAG.Cache`（ETS、バイト単位の上限、`allow_secret_paths` をキーに含む）と
+    `Index.fingerprint/1` を追加。未変更のワークスペースは再構築しない。
+  - `Retriever` が事前計算済みの語を読み、`exact_bonus` を候補のみに適用（実測 17.3×、
+    結果は完全一致）。
+  - `:rag_failed` イベントを追加。RAG 失敗は run を壊さないまま可視化される。
+  - `rag_default_index` golden case を追加（Spec A から先送りされていたもの）。
 - run 寿命と資源上限を追加（Spec D、2026-08-27）。
   - `MrEric.Runs.Limits` が `max_concurrent_runs` / `terminal_run_ttl_ms` /
     `hard_deadline_grace_ms` / `max_trace_entries` / `max_trace_payload_chars` /
