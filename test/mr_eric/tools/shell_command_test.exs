@@ -220,6 +220,21 @@ defmodule MrEric.Tools.ShellCommandTest do
                ShellCommand.run(%{command: "ls -LR ."}, workspace_root: workspace)
     end
 
+    test "grep -R cannot dereference symlinks out of the workspace", %{workspace: workspace} do
+      outside = outside_dir()
+      File.write!(Path.join(outside, "SECRET.txt"), "OUTSIDE_ONLY\n")
+      File.ln_s!(outside, Path.join(workspace, "linkdir"))
+
+      assert {:error, :dangerous_command} =
+               ShellCommand.run(%{command: "grep -R OUTSIDE_ONLY ."}, workspace_root: workspace)
+
+      # -r keeps the recursion without following the symlink.
+      assert {:ok, %{output: output}} =
+               ShellCommand.run(%{command: "grep -r OUTSIDE_ONLY ."}, workspace_root: workspace)
+
+      refute output =~ "OUTSIDE_ONLY"
+    end
+
     test "git --config-env is refused", %{workspace: workspace} do
       System.cmd("git", ["init", "-q"], cd: workspace, stderr_to_stdout: true)
 

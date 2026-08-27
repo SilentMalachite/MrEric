@@ -252,6 +252,9 @@ defmodule MrEric.Tools.PolicyTest do
             "rg -L needle .",
             "rg --follow needle .",
             "ls -LR .",
+            # -R dereferences symlinks on GNU grep / ugrep; -r does not.
+            "grep -R needle .",
+            "grep --dereference-recursive needle .",
             "git --config-env=core.pager=X status",
             "git diff --output=target.txt",
             "cat --show-all note.txt",

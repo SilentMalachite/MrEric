@@ -116,10 +116,15 @@ defmodule MrEric.Tools.Policy do
     },
     # grep's `-L` is "files without match" and is harmless; rg's `-L` is
     # "follow symlinks" and is not. Per-program tables make that expressible.
+    #
+    # `-R` (--dereference-recursive) is absent for the same reason `rg -L` and
+    # `ls -L` are: it follows symlinks out of the workspace. Whether it does so
+    # depends on which grep is on PATH (BSD grep does not, GNU grep and ugrep
+    # do), and a boundary must not depend on that. `-r` gives the recursion
+    # without the dereference.
     "grep" => %{
       short: %{
         "r" => :flag,
-        "R" => :flag,
         "n" => :flag,
         "i" => :flag,
         "H" => :flag,
@@ -148,6 +153,7 @@ defmodule MrEric.Tools.Policy do
         "--color" => :literal,
         "--include" => :literal,
         "--exclude" => :literal,
+        # GNU's long form of `-r`; `--dereference-recursive` is absent.
         "--recursive" => :flag,
         "--line-number" => :flag,
         "--ignore-case" => :flag,
