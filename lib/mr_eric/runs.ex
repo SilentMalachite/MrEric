@@ -8,7 +8,7 @@ defmodule MrEric.Runs do
   alias MrEric.Runs.RunSupervisor
   alias MrEric.Runs.RunWorker
 
-  @internal_opts [:subscribe]
+  @internal_opts [:subscribe, :supervisor]
 
   def start_run(task, owner_id, opts \\ [])
 
@@ -25,10 +25,12 @@ defmodule MrEric.Runs do
         subscribe(run.id)
       end
 
+      supervisor = Keyword.get(opts, :supervisor, RunSupervisor)
       worker_opts = Keyword.drop(opts, @internal_opts)
 
-      case RunSupervisor.start_run(run, worker_opts) do
+      case RunSupervisor.start_run(run, worker_opts, supervisor) do
         {:ok, _pid} -> {:ok, run}
+        {:error, :max_children} -> {:error, :too_many_runs}
         {:error, {:already_started, _pid}} -> {:error, :already_started}
         {:error, reason} -> {:error, reason}
       end
