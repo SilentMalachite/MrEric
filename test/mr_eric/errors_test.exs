@@ -28,4 +28,20 @@ defmodule MrEric.ErrorsTest do
     assert redacted.safe == "hello"
     assert redacted.output == ["Bearer [REDACTED]", %{password: "[REDACTED]"}]
   end
+
+  test "classify/1 gives a refused run its own classification" do
+    assert MrEric.Errors.classify(:too_many_runs) == :run_limit_reached
+    assert :run_limit_reached in MrEric.Errors.classifications()
+  end
+
+  test "classify/1 treats an over-lifetime run as a timeout" do
+    assert MrEric.Errors.classify(:run_lifetime_exceeded) == :timeout
+  end
+
+  test "to_safe_message/1 has a sentence for every classification" do
+    for classification <- MrEric.Errors.classifications(), classification != :unknown do
+      message = MrEric.Errors.to_safe_message(classification)
+      assert is_binary(message) and message != ""
+    end
+  end
 end

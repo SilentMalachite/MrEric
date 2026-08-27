@@ -15,6 +15,7 @@ defmodule MrEric.Errors do
     :patch_apply_failed,
     :rag_failed,
     :mcp_unavailable,
+    :run_limit_reached,
     :cancelled,
     :unknown
   ]
@@ -43,6 +44,8 @@ defmodule MrEric.Errors do
   def classify(:mcp_unavailable), do: :mcp_unavailable
   def classify(:cancelled), do: :cancelled
   def classify(:run_cancelled), do: :cancelled
+  def classify(:too_many_runs), do: :run_limit_reached
+  def classify(:run_lifetime_exceeded), do: :timeout
 
   def classify(%{status: 401}), do: :missing_api_key
   def classify(%{status: 403}), do: :missing_api_key
@@ -121,6 +124,9 @@ defmodule MrEric.Errors do
 
       :mcp_unavailable ->
         "MCP is unavailable or disabled."
+
+      :run_limit_reached ->
+        "Too many runs are already in progress."
 
       :cancelled ->
         "Run cancelled."
