@@ -3,6 +3,7 @@ defmodule MrEric.RAG do
   Public RAG facade for building planner context from project files.
   """
 
+  alias MrEric.RAG.Cache
   alias MrEric.RAG.Index
   alias MrEric.RAG.Retriever
 
@@ -23,10 +24,37 @@ defmodule MrEric.RAG do
 
   def context_for(_task, _opts), do: {:ok, ""}
 
+  # `opts[:rag_index]` stays the caller's escape hatch and never touches the
+  # cache. Otherwise: identify the tree with an lstat-only walk, use the cached
+  # index if it matches, and build in this process on a miss or a mismatch --
+  # never inside the cache GenServer.
   defp index_for(opts) do
     case Keyword.get(opts, :rag_index) do
-      %{chunks: chunks} = index when is_list(chunks) -> {:ok, index}
-      _none -> Index.build(opts)
+      %{chunks: chunks} = index when is_list(chunks) ->
+        {:ok, index}
+
+      _none ->
+        case Index.fingerprint(opts) do
+          {:ok, fingerprint, paths} -> cached_index(opts, fingerprint, paths)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp cached_index(opts, fingerprint, paths) do
+    key = Cache.key(opts)
+
+    case Cache.fetch(key, fingerprint) do
+      {:ok, index} ->
+        {:ok, index}
+
+      _stale_or_miss ->
+        # Hand `build/1` the paths the fingerprint walk already found, so the
+        # tree is walked once per `context_for/2` rather than twice.
+        with {:ok, index} <- Index.build(Keyword.put(opts, :paths, paths)) do
+          Cache.put(key, fingerprint, index)
+          {:ok, index}
+        end
     end
   end
 
