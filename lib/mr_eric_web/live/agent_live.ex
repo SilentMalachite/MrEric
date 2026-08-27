@@ -38,7 +38,11 @@ defmodule MrEricWeb.AgentLive do
        tool_events: [],
        form: to_form(%{"task" => ""})
      )
-     |> stream(:history, Agent.history(), at: 0, limit: Limits.fetch!(:max_history_entries))}
+     # No `at:` here. `Phoenix.LiveView.LiveStream.new/4` never reads it — it
+     # hardcodes -1 for every seeded item — so it was dead. Fortunate, too: had
+     # it worked, seeding would have prepended each entry in turn and handed the
+     # panel back its history oldest-first.
+     |> stream(:history, Agent.history(), limit: Limits.fetch!(:max_history_entries))}
   end
 
   @impl true
