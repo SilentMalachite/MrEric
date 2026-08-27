@@ -31,6 +31,12 @@ defmodule MrEric.Runs.Limits do
     # Backstop on `MrEric.Runs.Trace` entries. Chunk folding keeps a normal
     # run well under this.
     max_trace_entries: 500,
+    # Longest string a single trace payload value keeps. An entry cap counts
+    # entries; this is what makes the count a memory bound, because the bodies
+    # that reach a trace -- model output, tool output -- have no size the trace
+    # controls. The model's own view of tool output is bounded separately by
+    # the orchestrator's `max_tool_output_chars`; this is the diagnostic copy.
+    max_trace_payload_chars: 2_000,
     # Completed runs kept by `MrEric.Agent` and mirrored in the LiveView.
     max_history_entries: 50
   }

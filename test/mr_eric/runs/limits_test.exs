@@ -24,6 +24,7 @@ defmodule MrEric.Runs.LimitsTest do
     assert Limits.fetch!(:terminal_run_ttl_ms) == 60_000
     assert Limits.fetch!(:hard_deadline_grace_ms) == 60_000
     assert Limits.fetch!(:max_trace_entries) == 500
+    assert Limits.fetch!(:max_trace_payload_chars) == 2_000
     assert Limits.fetch!(:max_history_entries) == 50
   end
 
@@ -44,6 +45,7 @@ defmodule MrEric.Runs.LimitsTest do
              :max_concurrent_runs,
              :max_history_entries,
              :max_trace_entries,
+             :max_trace_payload_chars,
              :terminal_run_ttl_ms
            ]
   end
