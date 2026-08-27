@@ -702,7 +702,8 @@ defmodule MrEric.Runs.RunWorker do
           |> put_risk_level()
           |> put_reply_to(reply_to)
 
-        state = broadcast_and_apply(state, :tool_approval_requested, public_tool_payload(approval))
+        state =
+          broadcast_and_apply(state, :tool_approval_requested, public_tool_payload(approval))
 
         schedule_approval_expiry(approval)
 
