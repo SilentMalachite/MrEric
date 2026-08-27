@@ -34,7 +34,9 @@ defmodule MrEric.Evals.SecretCheckerTest do
       assert %Result{status: :leak, findings: findings} =
                SecretChecker.scan(%{
                  trace: %{
-                   entries: [%{payload: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"}]
+                   entries: [
+                     %{payload: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"}
+                   ]
                  }
                })
 
@@ -129,6 +131,20 @@ defmodule MrEric.Evals.SecretCheckerTest do
       assert {:error, leaks} = SecretChecker.check(%{final: "sk-leakedaaaaaa1234567890"})
       assert is_list(leaks)
       assert length(leaks) >= 1
+    end
+  end
+
+  describe "scan/1 — chunk folding coverage (Spec D)" do
+    test "a secret streamed into a stage is caught through the stage, not the trace" do
+      actual = %{
+        trace: MrEric.Runs.Trace.new("run-leak", "task", :ollama, "m"),
+        drafts: [
+          %{status: :completed, content: "OPENAI_API_KEY=sk-abcdefghijklmno", error: nil}
+        ]
+      }
+
+      assert %MrEric.Evals.SecretChecker.Result{status: :leak} =
+               MrEric.Evals.SecretChecker.scan(actual)
     end
   end
 end

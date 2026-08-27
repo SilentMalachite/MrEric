@@ -1,7 +1,7 @@
 # Spec C-1 — Command Argument Grammar Hardening
 
 - **Date:** 2026-08-27
-- **Status:** Revision 2 — designed, not yet implemented. Revision 1's deny-list approach was implemented on `feat/spec-c1-arg-grammar`, reviewed by Codex, and **rejected**: it failed open on every option it did not enumerate. See "Revision 2 — why the deny-list failed".
+- **Status:** Revision 2 implemented on `main` (2026-08-27). Revision 1's deny-list approach was implemented on `feat/spec-c1-arg-grammar`, reviewed by Codex, and **rejected**: it failed open on every option it did not enumerate. See "Revision 2 — why the deny-list failed".
 - **Plan:** `docs/superpowers/plans/2026-08-27-arg-grammar.md`
 - **Scope:** Follow-up to Spec C, opened by a Codex review of `feat/spec-c-tool-boundary` and confirmed by direct execution against the branch.
 - **Depends on:** Spec C (`Policy.command_argv/1`, argv-direct execution). This spec assumes both are already in `main`.

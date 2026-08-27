@@ -360,6 +360,71 @@ defmodule MrEricWeb.AgentLiveTest do
     assert render(view) =~ "MrEric AI Agent"
   end
 
+  test "the history panel keeps at most max_history_entries cards", %{conn: conn} do
+    limit = MrEric.Runs.Limits.fetch!(:max_history_entries)
+
+    for n <- 1..(limit + 5) do
+      entry =
+        "history task #{n}"
+        |> MrEric.Runs.Run.new(owner_id: "history-owner", id: "h#{n}")
+        |> MrEric.Runs.Run.to_history_entry()
+
+      {:ok, _entry} = MrEric.Agent.record(entry)
+    end
+
+    {:ok, _view, html} = live(conn, "/")
+
+    # Stream dom ids are "history-<entry.id>", so "history-h<n>" matches a card
+    # and nothing else — not "history-empty", not "history-changed-files-…".
+    card_count = length(Regex.scan(~r/id="history-h\d+"/, html))
+
+    assert card_count <= limit
+  end
+
+  test "completing more runs than max_history_entries stops growing the history panel",
+       %{conn: conn} do
+    # The bound that actually does the work is the `limit:` on the stream_insert
+    # in maybe_insert_history/3: `stream/4`'s limit is documented as not enforced
+    # on the first render, so the browser-side half of the history bound rests
+    # entirely on the insert path. Nothing exercised it before this test.
+    #
+    # Limits is override-only by design, so shrinking max_history_entries for
+    # this test keeps it to a handful of real runs instead of fifty-odd. The
+    # limit is still read back from Limits.fetch!/1, never written twice.
+    previous_limits = Application.get_env(:mr_eric, :run_limits, [])
+
+    Application.put_env(
+      :mr_eric,
+      :run_limits,
+      Keyword.put(previous_limits, :max_history_entries, 3)
+    )
+
+    on_exit(fn -> Application.put_env(:mr_eric, :run_limits, previous_limits) end)
+
+    limit = MrEric.Runs.Limits.fetch!(:max_history_entries)
+
+    {:ok, view, _html} = live(conn, "/")
+
+    for n <- 1..(limit + 3) do
+      view
+      |> form("#task-form", %{"task" => "history bound #{n}"})
+      |> render_submit()
+
+      # Each run has to reach a terminal status before the next submit: the
+      # "execute" handler unsubscribes from the previous run, so a run still
+      # streaming when the next one starts never delivers its :run_completed
+      # here and never becomes a card.
+      assert_eventually(fn -> not has_element?(view, "#cancel-run-button") end)
+    end
+
+    # Stream dom ids are "history-<entry.id>" and run ids are "run-<base64>",
+    # so this matches a run's history card and nothing else — not
+    # "history-empty", not "history-changed-files-run-…".
+    card_count = length(Regex.scan(~r/id="history-run-[A-Za-z0-9_-]+"/, render(view)))
+
+    assert card_count == limit
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

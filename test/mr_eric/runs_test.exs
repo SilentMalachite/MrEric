@@ -42,6 +42,13 @@ defmodule MrEric.RunsTest do
     end
   end
 
+  defmodule IdleOrchestrator do
+    @moduledoc false
+    # Never emits a terminal event, so the run stays non-terminal and its
+    # worker keeps holding its supervisor slot.
+    def stream(_task, _pid, _opts), do: Process.sleep(:infinity)
+  end
+
   @registry %{
     planner: [%{name: "planner", provider: :ollama, model: "planner-model"}],
     drafts: [
@@ -618,6 +625,71 @@ defmodule MrEric.RunsTest do
                       %{run_id: ^run_id,
                         approval_id: ^approval_id,
                         reason: :run_terminated}}, 500
+    end
+  end
+
+  describe "concurrency cap" do
+    test "start_run/3 refuses a run once the concurrency cap is reached" do
+      sup_name = :"run_sup_#{System.unique_integer([:positive])}"
+      start_supervised!({MrEric.Runs.RunSupervisor, name: sup_name, max_children: 1})
+
+      opts = [
+        orchestrator_module: IdleOrchestrator,
+        supervisor: sup_name,
+        skip_history: true
+      ]
+
+      assert {:ok, %Run{}} =
+               Runs.start_run("first", "test-owner", opts ++ [id: unique_run_id()])
+
+      assert {:error, :too_many_runs} =
+               Runs.start_run("second", "test-owner", opts ++ [id: unique_run_id()])
+    end
+
+    test "start_run/3 does not forward the :supervisor option to the worker" do
+      sup_name = :"run_sup_#{System.unique_integer([:positive])}"
+      start_supervised!({MrEric.Runs.RunSupervisor, name: sup_name, max_children: 1})
+      run_id = unique_run_id()
+
+      assert {:ok, %Run{}} =
+               Runs.start_run("only", "test-owner",
+                 orchestrator_module: IdleOrchestrator,
+                 supervisor: sup_name,
+                 skip_history: true,
+                 id: run_id
+               )
+
+      state = :sys.get_state(RunWorker.test_pid(run_id))
+      refute Keyword.has_key?(state.opts, :supervisor)
+    end
+
+    test "start_run/3 leaves no subscription behind when it refuses the run" do
+      sup_name = :"run_sup_#{System.unique_integer([:positive])}"
+      start_supervised!({MrEric.Runs.RunSupervisor, name: sup_name, max_children: 1})
+
+      opts = [
+        orchestrator_module: IdleOrchestrator,
+        supervisor: sup_name,
+        skip_history: true,
+        subscribe: true
+      ]
+
+      assert {:ok, %Run{}} =
+               Runs.start_run("first", "test-owner", opts ++ [id: unique_run_id()])
+
+      refused_id = unique_run_id()
+
+      assert {:error, :too_many_runs} =
+               Runs.start_run("second", "test-owner", opts ++ [id: refused_id])
+
+      # No worker was ever started for the refused run, so nothing will
+      # broadcast on its topic on its own. Doing it by hand is the only way to
+      # observe whether the caller is still listening to a run that will never
+      # exist -- AgentLive always passes subscribe: true, so every rejected
+      # click used to leave one of these behind for good.
+      Runs.broadcast(refused_id, {:run_failed, %{error: :boom}})
+
+      refute_receive {:run_failed, %{run_id: ^refused_id}}, 200
     end
   end
 end

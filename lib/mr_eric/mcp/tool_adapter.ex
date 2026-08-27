@@ -69,11 +69,12 @@ defmodule MrEric.MCP.ToolAdapter do
   defp normalize_key("type"), do: :type
   defp normalize_key(key), do: key
 
+  # Atom keys only: every call site passes a literal (`:name`, `:description`,
+  # `:input_schema`, `:inputSchema`, `:schema`), and the atom clause already
+  # tries the string form of each.
   defp value(map, key) when is_atom(key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
-
-  defp value(map, key) when is_binary(key), do: Map.get(map, key)
 
   defp string_or_default(value, _default) when is_binary(value) and value != "", do: value
   defp string_or_default(_value, default), do: default

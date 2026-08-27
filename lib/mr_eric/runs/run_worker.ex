@@ -8,12 +8,27 @@ defmodule MrEric.Runs.RunWorker do
   alias MrEric.Agent
   alias MrEric.Orchestrator
   alias MrEric.Runs.Events
+  alias MrEric.Runs.Limits
   alias MrEric.Runs.OwnerCheck
   alias MrEric.Runs.Run
   alias MrEric.Tools.Executor
 
   @registry MrEric.Runs.Registry
   @run_events Events.names()
+
+  # The run events that put a terminal run back to a live status. `Run` is the
+  # authority on which those are, and it is a frozen file, so this list is
+  # pinned to Run's actual behaviour by a test in run_worker_lifetime_test.exs,
+  # which asserts its independently-derived set against reviving_events/0
+  # below -- not a hand-typed copy -- so either adding to or removing from
+  # this list without a matching change in `Run` fails that test.
+  # `:tool_completed` is deliberately absent — it never touches `status`, and
+  # a late one still carries `changed_files` worth recording.
+  @reviving_events [:run_started, :stage_started, :stage_chunk, :tool_approval_requested]
+
+  @doc false
+  def reviving_events, do: @reviving_events
+
   @public_tool_keys [
     :approval_id,
     :tool_call_id,
@@ -114,13 +129,17 @@ defmodule MrEric.Runs.RunWorker do
     worker_opts = Keyword.get(opts, :opts, [])
     auto_start = Keyword.get(opts, :auto_start, true)
 
+    Process.send_after(self(), :hard_deadline, hard_deadline_ms(worker_opts))
+
     state = %{
       run: run,
       opts: worker_opts,
       task: nil,
       cancelled?: false,
       history_recorded?: false,
-      pending_tool_approvals: %{}
+      reap_scheduled?: false,
+      pending_tool_approvals: %{},
+      tool_tasks: %{}
     }
 
     if auto_start do
@@ -150,7 +169,7 @@ defmodule MrEric.Runs.RunWorker do
         orchestrator.stream(run.task, worker, stream_opts)
       end)
 
-    {:noreply, %{state | run: run, task: task}}
+    {:noreply, state |> put_run(run) |> Map.put(:task, task)}
   end
 
   @impl true
@@ -178,7 +197,7 @@ defmodule MrEric.Runs.RunWorker do
 
             state =
               state
-              |> Map.put(:run, run)
+              |> put_run(run)
               |> Map.put(:task, nil)
               |> Map.put(:cancelled?, true)
               |> maybe_resolve_pending_tool_approvals(:run_cancelled)
@@ -274,25 +293,22 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_info({event, payload}, state) when event in @run_events do
-    if state.cancelled? and event != :run_cancelled do
-      {:noreply, state}
-    else
-      {event, payload} = Events.normalize_event(state.run.id, {event, payload})
+    cond do
+      state.cancelled? and event != :run_cancelled ->
+        {:noreply, state}
 
-      run = Run.apply_event(state.run, {event, payload})
+      # A terminal run's outcome is final. These four are the only events
+      # Run.do_apply_event/3 lets move a run back to a live status, and it
+      # applies them unconditionally, so a straggler from a parallel stage
+      # would otherwise un-terminalise a run that already finished — stranding
+      # its supervisor slot and re-opening handle_tool_request/2. The
+      # :cancelled? flag covers only the paths that kill the task themselves;
+      # a run that completed normally never sets it.
+      event in @reviving_events and Run.terminal?(state.run) ->
+        {:noreply, state}
 
-      state =
-        state
-        |> Map.put(:run, run)
-        |> maybe_resolve_pending_tool_approvals(event)
-
-      state =
-        state
-        |> maybe_record_history(event)
-
-      Events.broadcast(run.id, {event, payload})
-
-      {:noreply, state}
+      true ->
+        apply_run_event(event, payload, state)
     end
   end
 
@@ -331,6 +347,79 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
+  def handle_info(:reap, state) do
+    if Run.terminal?(state.run) do
+      # The task is normally already finished; shutting it down defensively
+      # keeps a stray orchestrator Task from outliving its worker, since a
+      # :normal exit does not take linked processes with it. The tool tasks
+      # are already gone by construction -- put_run/2 kills them the moment
+      # the run goes terminal, and only a terminal run reaches here -- but
+      # they are linked to this worker for the same reason, so they get the
+      # same defence.
+      shutdown_task(state.task)
+      state = shutdown_tool_tasks(state)
+      {:stop, :normal, state}
+    else
+      # A terminal run can no longer be put back to a live status through the
+      # mailbox -- the guard above drops every @reviving_events event once
+      # Run.terminal?/1 holds -- so the one former route into this branch is
+      # closed. It stays as defence in depth for totality: a stray or
+      # duplicate :reap that lands on a non-terminal run (reap_scheduled?:
+      # true forced by some other path, not by a revival) still reaches here.
+      # Clearing the flag is what matters when it does -- left set, it would
+      # permanently short-circuit maybe_schedule_reap/1 and strand this
+      # worker's supervisor slot until the hard deadline.
+      {:noreply, %{state | reap_scheduled?: false}}
+    end
+  end
+
+  @impl true
+  def handle_info(:hard_deadline, state) do
+    if Run.terminal?(state.run) do
+      # The reap timer owns the stop from here.
+      {:noreply, state}
+    else
+      shutdown_task(state.task)
+
+      {event, payload} =
+        Events.normalize_event(state.run.id, {:run_failed, %{error: :run_lifetime_exceeded}})
+
+      run = Run.apply_event(state.run, {event, payload})
+
+      state =
+        state
+        |> put_run(run)
+        |> Map.put(:task, nil)
+        |> Map.put(:cancelled?, true)
+        |> maybe_resolve_pending_tool_approvals(:run_failed)
+
+      Events.broadcast(run.id, {event, payload})
+
+      {:noreply, state}
+    end
+  end
+
+  # Tool execution runs in its own task precisely so these two clauses exist:
+  # while a tool is in flight the worker is still in its receive loop, so
+  # :hard_deadline, :reap and cancel/2 are processed on time. `System.cmd/3`
+  # has no timeout, so an approved `shell_command` blocking the worker itself
+  # would have no bound at all.
+  @impl true
+  def handle_info({ref, result}, %{tool_tasks: tool_tasks} = state)
+      when is_map_key(tool_tasks, ref) do
+    Process.demonitor(ref, [:flush])
+    {entry, state} = pop_in(state.tool_tasks[ref])
+    {:noreply, apply_tool_result(entry, result, state)}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{tool_tasks: tool_tasks} = state)
+      when is_map_key(tool_tasks, ref) do
+    {entry, state} = pop_in(state.tool_tasks[ref])
+    {:noreply, apply_tool_result(entry, {:error, reason}, state)}
+  end
+
+  @impl true
   def handle_info({ref, _result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | task: nil}}
@@ -340,10 +429,12 @@ defmodule MrEric.Runs.RunWorker do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state) do
     state =
       cond do
-        state.cancelled? ->
-          %{state | task: nil}
-
-        reason == :normal ->
+        # A run that already reached a terminal status owns its own outcome.
+        # The task's :run_completed is a plain send/2, so it arrives *before*
+        # this :DOWN — and maybe_record_history/2 has already written a
+        # completed history entry from it. Overwriting the live run with
+        # run_failed here would leave history and the run disagreeing.
+        state.cancelled? or reason == :normal or Run.terminal?(state.run) ->
           %{state | task: nil}
 
         true ->
@@ -352,8 +443,15 @@ defmodule MrEric.Runs.RunWorker do
 
           state =
             state
-            |> Map.put(:run, run)
+            |> put_run(run)
             |> Map.put(:task, nil)
+            # The same guard :hard_deadline sets, for the same reason: the
+            # dead task's Task.async_stream children send to this worker
+            # directly, and Run.do_apply_event/3 puts a :stage_chunk back to
+            # :streaming unconditionally. A straggler would un-terminalise the
+            # run, strand its supervisor slot until the hard deadline, and
+            # re-open handle_tool_request/2.
+            |> Map.put(:cancelled?, true)
             |> maybe_resolve_pending_tool_approvals(:run_failed)
 
           Events.broadcast(run.id, {event, payload})
@@ -368,8 +466,32 @@ defmodule MrEric.Runs.RunWorker do
     {:noreply, state}
   end
 
+  # A reply from a tool task that was shut down when the run terminalised.
+  # `Task.shutdown/2` flushes the task's reply, so this is only reached by a
+  # reply that was already in the mailbox ahead of the shutdown.
+  @impl true
+  def handle_info({ref, _result}, state) when is_reference(ref) do
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:EXIT, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  defp apply_run_event(event, payload, state) do
+    {event, payload} = Events.normalize_event(state.run.id, {event, payload})
+
+    run = Run.apply_event(state.run, {event, payload})
+
+    state =
+      state
+      |> put_run(run)
+      |> maybe_resolve_pending_tool_approvals(event)
+      |> maybe_record_history(event)
+
+    Events.broadcast(run.id, {event, payload})
+
     {:noreply, state}
   end
 
@@ -406,15 +528,82 @@ defmodule MrEric.Runs.RunWorker do
   defp shutdown_task(nil), do: :ok
   defp shutdown_task(task), do: Task.shutdown(task, :brutal_kill)
 
+  # Every write of state.run goes through here, so "terminal implies a
+  # scheduled stop, and no tool still running" holds by construction rather
+  # than by remembering to call both at each of the four terminal sites.
+  defp put_run(state, %Run{} = run) do
+    state
+    |> Map.put(:run, run)
+    |> maybe_schedule_reap()
+    |> maybe_shutdown_tool_tasks()
+  end
+
+  # A tool outliving its run is not just a stray process: `System.cmd/3` blocks
+  # a whole scheduler-bound OS process, and there is no worker left to receive
+  # what it produces.
+  defp maybe_shutdown_tool_tasks(%{tool_tasks: tool_tasks} = state)
+       when map_size(tool_tasks) == 0,
+       do: state
+
+  defp maybe_shutdown_tool_tasks(state) do
+    if Run.terminal?(state.run) do
+      shutdown_tool_tasks(state)
+    else
+      state
+    end
+  end
+
+  defp shutdown_tool_tasks(state) do
+    Enum.each(state.tool_tasks, fn {_ref, %{task: task}} ->
+      Task.shutdown(task, :brutal_kill)
+    end)
+
+    %{state | tool_tasks: %{}}
+  end
+
+  defp maybe_schedule_reap(%{reap_scheduled?: true} = state), do: state
+
+  defp maybe_schedule_reap(state) do
+    if Run.terminal?(state.run) do
+      Process.send_after(self(), :reap, reap_ttl(state))
+      %{state | reap_scheduled?: true}
+    else
+      state
+    end
+  end
+
+  defp reap_ttl(state) do
+    Keyword.get(state.opts, :terminal_run_ttl_ms, Limits.fetch!(:terminal_run_ttl_ms))
+  end
+
+  # The absolute ceiling on a worker's life: the orchestrator's own runtime
+  # budget plus a grace period. With a finite supervisor pool, a worker that
+  # never terminalises is not a slow leak — it is one slot of the pool, gone
+  # for good.
+  defp hard_deadline_ms(opts) do
+    max_total_runtime_ms =
+      Keyword.get(
+        opts,
+        :max_total_runtime_ms,
+        Orchestrator.default_tool_limits().max_total_runtime_ms
+      )
+
+    grace =
+      Keyword.get(opts, :hard_deadline_grace_ms, Limits.fetch!(:hard_deadline_grace_ms))
+
+    max_total_runtime_ms + grace
+  end
+
   defp maybe_resolve_pending_tool_approvals(state, event)
        when event in [:run_completed, :run_failed, :run_cancelled] do
     Enum.each(state.pending_tool_approvals, fn {approval_id, request} ->
       broadcast_tool_approval_resolved(state, request, false, "Run finished before approval.")
 
       {ev, payload} =
-        Events.normalize_event(state.run.id,
-          {:tool_approval_expired,
-           %{approval_id: approval_id, reason: :run_terminated}})
+        Events.normalize_event(
+          state.run.id,
+          {:tool_approval_expired, %{approval_id: approval_id, reason: :run_terminated}}
+        )
 
       Events.broadcast(state.run.id, {ev, payload})
     end)
@@ -455,56 +644,84 @@ defmodule MrEric.Runs.RunWorker do
     approval_id = Map.get(payload, :approval_id) || Map.get(payload, "approval_id")
     opts = tool_opts(state, tool_call_id, approval_id)
 
-    case Executor.request_tool(tool, args, reason, opts) do
-      {:ok, result} ->
-        request =
-          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
+    request =
+      %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
+      |> put_risk_level()
+      |> put_reply_to(reply_to)
 
-        state
-        |> broadcast_tool_started(request)
-        |> broadcast_tool_completed(request, result)
+    executor = executor(state)
 
-      {:approval_required, request} ->
-        request =
-          request
-          |> Map.put(:role, role)
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
-
-        state =
-          state
-          |> broadcast_and_apply(:tool_approval_requested, public_tool_payload(request))
-
-        schedule_approval_expiry(request)
-
-        put_in(state.pending_tool_approvals[request.approval_id], request)
-
-      {:error, reason} ->
-        request =
-          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
-
-        broadcast_tool_denied(state, request, reason)
-    end
+    start_tool_task(state, {:request_tool, request, role, reply_to}, fn ->
+      executor.request_tool(tool, args, reason, opts)
+    end)
   end
 
   defp prepare_tool_call(_payload, state), do: state
 
   defp execute_tool_request(request, state) do
-    state
-    |> broadcast_tool_started(request)
-    |> do_execute_tool_request(request)
+    state = broadcast_tool_started(state, request)
+
+    executor = executor(state)
+    opts = tool_opts(state, request.tool_call_id, nil)
+
+    start_tool_task(state, {:execute_approved, request}, fn ->
+      executor.execute_approved(request, opts)
+    end)
   end
 
-  defp do_execute_tool_request(state, request) do
-    case Executor.execute_approved(request, tool_opts(state, request.tool_call_id, nil)) do
-      {:ok, result} -> broadcast_tool_completed(state, request, result)
+  # `Task.async/1` links, and the worker traps exits, so a tool that raises
+  # arrives here as a :DOWN rather than taking the worker with it.
+  defp start_tool_task(state, kind, fun) do
+    task = Task.async(fun)
+    put_in(state.tool_tasks[task.ref], %{task: task, kind: kind})
+  end
+
+  # Defence in depth against the one ordering `put_run/2`'s shutdown cannot
+  # reach: a reply that was already in the mailbox when the run terminalised.
+  # A terminal run's outcome is final, and a tool broadcast would put it back
+  # to a live status through `Run.do_apply_event/3`.
+  defp apply_tool_result(entry, result, state) do
+    if state.cancelled? or Run.terminal?(state.run) do
+      state
+    else
+      do_apply_tool_result(entry.kind, result, state)
+    end
+  end
+
+  defp do_apply_tool_result({:request_tool, request, role, reply_to}, result, state) do
+    case result do
+      {:ok, tool_result} ->
+        state
+        |> broadcast_tool_started(request)
+        |> broadcast_tool_completed(request, tool_result)
+
+      {:approval_required, approval} ->
+        approval =
+          approval
+          |> Map.put(:role, role)
+          |> put_risk_level()
+          |> put_reply_to(reply_to)
+
+        state =
+          broadcast_and_apply(state, :tool_approval_requested, public_tool_payload(approval))
+
+        schedule_approval_expiry(approval)
+
+        put_in(state.pending_tool_approvals[approval.approval_id], approval)
+
+      {:error, reason} ->
+        broadcast_tool_denied(state, request, reason)
+    end
+  end
+
+  defp do_apply_tool_result({:execute_approved, request}, result, state) do
+    case result do
+      {:ok, tool_result} -> broadcast_tool_completed(state, request, tool_result)
       {:error, reason} -> broadcast_tool_failed(state, request, reason)
     end
   end
+
+  defp executor(state), do: Keyword.get(state.opts, :executor_module, Executor)
 
   defp broadcast_tool_started(state, request) do
     broadcast_and_apply(state, :tool_started, tool_event_payload(request))
@@ -566,7 +783,7 @@ defmodule MrEric.Runs.RunWorker do
     {event, payload} = Events.normalize_event(state.run.id, {event, payload})
     run = Run.apply_event(state.run, {event, payload})
     Events.broadcast(run.id, {event, payload})
-    %{state | run: run}
+    put_run(state, run)
   end
 
   defp tool_event_payload(request) do
@@ -654,8 +871,10 @@ defmodule MrEric.Runs.RunWorker do
     pending = Map.delete(state.pending_tool_approvals, approval_id)
 
     {event, payload} =
-      Events.normalize_event(state.run.id,
-        {:tool_approval_expired, %{approval_id: approval_id, reason: reason}})
+      Events.normalize_event(
+        state.run.id,
+        {:tool_approval_expired, %{approval_id: approval_id, reason: reason}}
+      )
 
     Events.broadcast(state.run.id, {event, payload})
     %{state | pending_tool_approvals: pending}

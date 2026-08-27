@@ -55,6 +55,41 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   the data layer changes (this is documented at the top of `lib/mr_eric/runs/run.ex`).
 - PubSub topic is always `"runs:#{run_id}"`. Run statuses and roles are the closed lists in
   `lib/mr_eric/runs/run.ex`; event names live in `lib/mr_eric/runs/events.ex`.
+- **Run limits are one contract.** `MrEric.Runs.Limits` owns `max_concurrent_runs`,
+  `terminal_run_ttl_ms`, `hard_deadline_grace_ms`, `max_trace_entries`,
+  `max_trace_payload_chars`, and `max_history_entries`; `@defaults` in that module is the
+  only place a default is written, and `config :mr_eric, :run_limits` is override-only.
+  `fetch!/1` raises on an unknown key — never give a limit lookup a silent default.
+- `RunSupervisor` caps concurrent workers with `max_children`; `Runs.start_run/3` returns
+  `{:error, :too_many_runs}` at the cap. The cap counts **workers, not streaming runs** — a
+  finished run holds its slot until it is reaped, so a refusal can arrive when nothing is
+  actually running. `RunWorker` stops itself `terminal_run_ttl_ms`
+  after its run becomes terminal (every write of `state.run` goes through `put_run/2`, so
+  "terminal implies scheduled stop" holds by construction), and terminalises itself with
+  `:run_lifetime_exceeded` at `max_total_runtime_ms + hard_deadline_grace_ms` no matter
+  what. **Terminalising is not stopping**: a stuck worker releases its slot one
+  `terminal_run_ttl_ms` after that, so the absolute ceiling on a worker's life is
+  `max_total_runtime_ms + hard_deadline_grace_ms + terminal_run_ttl_ms` — 300 s on the
+  defaults, not 240 s. That ceiling only holds because **tool execution runs in its own
+  Task**: both `Executor.request_tool/4` and `Executor.execute_approved/2` used to run
+  inside the GenServer, and `System.cmd/3` has no timeout, so a hung `shell_command`
+  blocked `:hard_deadline` itself. `put_run/2` also shuts those tasks down the moment the
+  run goes terminal.
+- **The trace is bounded by size, not only by entry count.** `Trace` folds `stage_chunk`
+  into per-role counters and drops `stage_completed`'s `content` — both bodies already
+  live in `Run.stages[role].content` — caps `entries` (reporting overflow as
+  `dropped_entries`), and truncates every remaining string to `max_trace_payload_chars`.
+  Truncation runs **after** `Errors.redact/1`, never before: half a secret is a secret the
+  redactor no longer matches.
+- **Error classification is taken once, at `Events.normalize_event/2`.** That is the last
+  place the raw reason exists; afterwards `:error` is a sentence written for a human.
+  Normalization carries `:error_class` (always a member of `Errors.classifications/0`)
+  and `Trace` reads it. Never re-derive a classification by keyword-matching a sanitized
+  message — that is what made `:run_lifetime_exceeded` classify as `:unknown`.
+- **`Runs.get_run/1` is time-dependent since Spec D**: reaping stops the worker, so once a
+  finished run's `terminal_run_ttl_ms` has elapsed the same run id returns
+  `{:error, :not_found}`. Read a completed run's state inside that window, or take it from
+  `MrEric.Agent` history, which outlives the worker.
 
 ### Run ownership (Spec B — implemented)
 - Every run is bound to an `owner_id`. `MrEric.Plugs.EnsureOwnerId` (wired into the
@@ -70,7 +105,10 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
 - `MrEric.Orchestrator.stream/3` lets only `:planner`, `:critic`, `:reviewer` request tools
   (draft/synthesizer stay text-only). It emits `{:tool_requested, ...}` internally.
 - **`RunWorker` is the sole broker** that calls `MrEric.Tools.Executor.request_tool/4`.
-  Orchestrator must never bypass RunWorker, Registry, Policy, or the approval flow.
+  Orchestrator must never bypass RunWorker, Registry, Policy, or the approval flow. The
+  call itself runs in a `Task` the worker owns (`state.tool_tasks`), so the worker stays
+  responsive to `:hard_deadline`, `:reap` and `cancel/2` while a tool runs; the result
+  comes back as a message and is dropped if the run went terminal meanwhile.
 - While an approval is pending, RunWorker sets run status `:waiting_for_approval`.
 - Two tool-call formats are accepted (`lib/mr_eric/orchestrator/tool_call_parser.ex`):
   OpenAI `choices[0].message.tool_calls`, or — for local LLMs — the **entire** assistant

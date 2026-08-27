@@ -10,16 +10,18 @@ defmodule MrEric.Agent do
   use GenServer
 
   alias MrEric.Orchestrator
+  alias MrEric.Runs.Limits
 
   @default_task_supervisor MrEric.Agent.TaskSupervisor
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     task_supervisor = Keyword.get(opts, :task_supervisor, @default_task_supervisor)
+    max_history = Keyword.get(opts, :max_history, Limits.fetch!(:max_history_entries))
 
     GenServer.start_link(
       __MODULE__,
-      %{history: [], task_supervisor: task_supervisor, pending: %{}},
+      %{history: [], task_supervisor: task_supervisor, pending: %{}, max_history: max_history},
       name: name
     )
   end
@@ -56,7 +58,7 @@ defmodule MrEric.Agent do
 
   @impl true
   def handle_call({:record, entry}, _from, state) do
-    history = [entry | state.history]
+    history = [entry | state.history] |> Enum.take(state.max_history)
     {:reply, {:ok, entry}, %{state | history: history}}
   end
 
@@ -84,7 +86,7 @@ defmodule MrEric.Agent do
         case result do
           {:ok, run_result} ->
             entry = build_entry(task, opts, run_result)
-            history = [entry | state.history]
+            history = [entry | state.history] |> Enum.take(state.max_history)
             GenServer.reply(from, {:ok, entry})
             {:noreply, %{state | history: history}}
 

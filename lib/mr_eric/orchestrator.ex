@@ -16,6 +16,14 @@ defmodule MrEric.Orchestrator do
     max_tool_output_chars: 8_000
   }
 
+  @doc """
+  The default per-run tool budgets.
+
+  Public so `MrEric.Runs.RunWorker` can derive its absolute deadline from
+  `max_total_runtime_ms` instead of keeping a second copy of the number.
+  """
+  def default_tool_limits, do: @default_tool_limits
+
   @tool_roles [:planner, :critic, :reviewer]
 
   @doc """

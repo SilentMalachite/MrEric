@@ -8,7 +8,7 @@ defmodule MrEric.Runs do
   alias MrEric.Runs.RunSupervisor
   alias MrEric.Runs.RunWorker
 
-  @internal_opts [:subscribe]
+  @internal_opts [:subscribe, :supervisor]
 
   def start_run(task, owner_id, opts \\ [])
 
@@ -20,17 +20,32 @@ defmodule MrEric.Runs do
       {:error, :invalid_task}
     else
       run = Run.new(task, Keyword.put(opts, :owner_id, owner_id))
+      subscribe? = Keyword.get(opts, :subscribe, false)
 
-      if Keyword.get(opts, :subscribe, false) do
+      # Subscribing has to happen before the child starts: the worker
+      # broadcasts run_started from handle_continue(:start, ...), which can
+      # run before start_child/2 has even returned here. So the failure paths
+      # hand the subscription back rather than the success path taking it late.
+      if subscribe? do
         subscribe(run.id)
       end
 
+      supervisor = Keyword.get(opts, :supervisor, RunSupervisor)
       worker_opts = Keyword.drop(opts, @internal_opts)
 
-      case RunSupervisor.start_run(run, worker_opts) do
-        {:ok, _pid} -> {:ok, run}
-        {:error, {:already_started, _pid}} -> {:error, :already_started}
-        {:error, reason} -> {:error, reason}
+      case RunSupervisor.start_run(run, worker_opts, supervisor) do
+        {:ok, _pid} ->
+          {:ok, run}
+
+        {:error, reason} ->
+          # Every refusal, not just the concurrency cap: a subscription to a
+          # run that will never exist is never cleaned up by anything else,
+          # and MrEricWeb.AgentLive always passes subscribe: true.
+          if subscribe? do
+            unsubscribe(run.id)
+          end
+
+          {:error, start_error(reason)}
       end
     end
   end
@@ -56,4 +71,8 @@ defmodule MrEric.Runs do
   def unsubscribe(run_id), do: Events.unsubscribe(run_id)
 
   def broadcast(run_id, event), do: Events.broadcast(run_id, event)
+
+  defp start_error(:max_children), do: :too_many_runs
+  defp start_error({:already_started, _pid}), do: :already_started
+  defp start_error(reason), do: reason
 end

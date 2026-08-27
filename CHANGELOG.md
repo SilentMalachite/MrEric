@@ -11,11 +11,35 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は Spec A–C と Spec C-1 まで `main` に入っています。残りは Spec D–F です。
+監査由来のセキュリティ hardening は、Spec A–D が `main` に入っており、残りは Spec E–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
 
+- run 寿命と資源上限を追加（Spec D、2026-08-27）。
+  - `MrEric.Runs.Limits` が `max_concurrent_runs` / `terminal_run_ttl_ms` /
+    `hard_deadline_grace_ms` / `max_trace_entries` / `max_trace_payload_chars` /
+    `max_history_entries` を所有。
+    既定値はこのモジュールの `@defaults` のみに書き、`config :mr_eric, :run_limits` は上書き専用。
+    未知キーは `fetch!/1` が例外にする。
+  - `RunSupervisor` に `max_children` を設定し、上限到達時は `MrEric.Runs.start_run/3` が
+    `{:error, :too_many_runs}` を返す。
+  - `RunWorker` は terminal 到達から `terminal_run_ttl_ms` 後に自身を停止し、
+    `max_total_runtime_ms + hard_deadline_grace_ms` の絶対期限で
+    `:run_lifetime_exceeded` として必ず terminal になる。
+  - tool 実行（`Executor.request_tool/4` と `Executor.execute_approved/2`）は RunWorker 内の
+    Task で走る。`System.cmd/3` に timeout はないため、GenServer 内で同期実行していた頃は
+    停止した `shell_command` が `:hard_deadline` 自体を塞ぎ、絶対期限に上限がなかった。
+    `put_run/2` は run が terminal になった時点でこの Task を落とす。
+  - `MrEric.Runs.Trace` は `stage_chunk` を role ごとのカウンタに畳み、`stage_completed` の
+    `content` を捨て（どちらの本文も `Run.stages[role].content` に残る）、`entries` を上限で
+    切って `dropped_entries` に記録し、残る文字列を `max_trace_payload_chars` で切り詰める。
+    切り詰めは `Errors.redact/1` の**後**に行う（先に切ると秘密が半分だけ残り、redactor が
+    一致しなくなる）。
+  - 失敗の分類は `Events.normalize_event/2` が生の理由を持っている時点で一度だけ取り、
+    `:error_class` として運ぶ。`Trace` はそれを読む。サニタイズ済みメッセージからの
+    キーワード再導出は行わない（`:run_lifetime_exceeded` が `:unknown` になっていた原因）。
+  - 完了 run 履歴は `MrEric.Agent` と LiveView の history stream の双方で上限を持つ。
 - 起動時の local-first provider 判定を追加（2026-06-07）。
   - `MrEric.LLM.ProviderResolver` が `[:lmstudio, :ollama, :openai]` を短い timeout でヘルスチェックし、最初に到達できた provider をキャッシュ。
   - `AI_PROVIDER` または `:ai_provider` が明示されている場合は連鎖をスキップ。
@@ -75,7 +99,14 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 - production runtime config を provider 別の必須環境変数チェックに更新。
 - model selection を OpenAI 固定から provider-specific model catalog に変更。
 - README を現行 architecture、provider 設定、safe tool execution、RAG / MCP、deterministic evals に合わせて更新。
-- `mix precommit` は `compile --warning-as-errors`、`deps.unlock --unused`、`test` を実行する品質チェックとして整理。
+- `mix precommit` は `compile --warnings-as-errors`、`deps.unlock --unused`、`test` を実行する品質チェックとして整理。
+  - 当初は `--warning-as-errors`（単数）と書いており、Elixir に存在しないフラグだったため Mix が
+    無視していた。10 件の警告を抱えたまま PASS を報告し続けていたのを 2026-08-27 に修正。
+- `phoenix_live_view` を `~> 1.1.0` から `~> 1.2` に更新（2026-08-27）。
+  警告ゲートを有効化するための前提。10 件中 8 件が LiveView 1.1.17 の HEEx 生成コードが
+  Elixir 1.20 下で出す `vars_changed` 型警告で、自前コードでは解消できず、`~> 1.1.0` の
+  範囲では 1.1.17 が最新だったため。この更新で `<.button type="submit">` が
+  `button/1` の未宣言属性を渡していたことが判明（1.1 では黙って捨てられていた）。
 
 ### Security
 
@@ -184,5 +215,6 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 - 2026-06-07 の `main` には Phase 2 LLM orchestration、Phase 5A tool approval、Phase 5B RAG / MCP interface、Phase 5C tool loop、Phase 6 patch apply flow、Phase 9 eval harness、Spec A/B のセキュリティ hardening、local-first provider 判定までが含まれます。
 - 2026-08-27 に README、API リファレンス、AGENTS.md、監査 spec のステータスを現行コードへ同期した。
-- 2026-05-05 監査の残りは Spec C（tool 境界）、Spec D（Run 寿命 / 資源）、Spec E（eval / RAG 正しさ）、Spec F（本番 HTTP）です。
+- 2026-05-05 監査の残りは Spec E（eval / RAG 正しさ）と Spec F（本番 HTTP）です。Spec C と
+  Spec D は `main` に入りました。
 - repository には現時点で release tag がないため、`Unreleased` は `mix.exs` version `0.1.0` 以降の main branch の状態を表します。

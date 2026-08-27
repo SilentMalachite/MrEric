@@ -69,6 +69,16 @@ defmodule MrEric.Runs.Events do
   def public_error(:mcp_unavailable), do: "MCP is unavailable or disabled."
   def public_error(:rag_failed), do: "Project context lookup failed."
 
+  # The cap counts supervised workers, and a finished run keeps its worker for
+  # `terminal_run_ttl_ms` after it ends. So the blocking runs may all have
+  # finished already, and "wait for one to finish" would be advice that cannot
+  # work. Point at the wait that does.
+  def public_error(:too_many_runs),
+    do: "Too many recent runs. Wait about a minute for a slot to free up, then try again."
+
+  def public_error(:run_lifetime_exceeded),
+    do: "The run exceeded its maximum lifetime and was stopped."
+
   def public_error(%{reason: reason}), do: public_error(reason)
 
   def public_error(%{status: 401}),
@@ -97,10 +107,22 @@ defmodule MrEric.Runs.Events do
   defp normalize_payload(payload) when is_map(payload), do: payload
   defp normalize_payload(payload), do: %{value: payload}
 
+  # This is the last point at which the raw reason still exists: `:error`
+  # leaves here as a sentence written for a human, and recovering a
+  # classification from that sentence downstream is keyword-matching against
+  # English -- `:run_lifetime_exceeded` becomes "The run exceeded its maximum
+  # lifetime and was stopped.", which contains no keyword any classifier looks
+  # for, so it classified as `:unknown`. `MrEric.Errors.classify/1` knows the
+  # atom exactly, so the classification is taken here and carried alongside.
+  # `:error_class` is safe to broadcast: `classify/1` only ever returns a
+  # member of the closed `MrEric.Errors.classifications/0` list.
   defp sanitize_payload(payload, event)
        when event in [:stage_failed, :run_failed, :tool_failed, :tool_denied, :tool_rejected] do
     error = Map.get(payload, :error) || Map.get(payload, :reason) || Map.get(payload, :value)
-    Map.put(payload, :error, public_error(error))
+
+    payload
+    |> Map.put(:error, public_error(error))
+    |> Map.put(:error_class, MrEric.Errors.classify(error))
   end
 
   defp sanitize_payload(payload, _event), do: payload

@@ -1,7 +1,7 @@
 # Spec C — Tool Boundary Hardening
 
 - **Date:** 2026-08-27
-- **Status:** Designed. Not yet implemented.
+- **Status:** Implemented on `main` (2026-08-27)
 - **Plan:** `docs/superpowers/plans/2026-08-27-tool-boundary.md`
 - **Scope:** Third of six security-hardening specs derived from the 2026-05-05 audit report.
 - **Tracks audit findings:** shell interpretation of approved commands, case-sensitive `.git`/`.ssh` exclusion, check-to-use gap between `Policy.authorize/3` and tool execution (all medium-severity).
