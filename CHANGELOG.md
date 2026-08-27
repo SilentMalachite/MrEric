@@ -79,25 +79,29 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 ### Security
 
-- コマンド引数文法を hardening（Spec C-1、2026-08-27）。Spec C 実装後の Codex レビューで発見し、
-  ブランチ上で実行して再現を確認した迂回 3 件を塞いだ。いずれも Spec C の regression ではなく
-  `main` 由来の既存欠陥。
-  - `sed -E -i.bak ...` が承認を通り、`apply_patch` の検証・承認フローを介さずファイルを直接書き換えていた。
-    deny-list が `~r/(^|\s)sed\s+-i/` と**位置依存**で、`sed` と `-i` の間に何か挟むと外れていたため。
-    argv ベースの `ensure_program_options_allowed/1` を追加し、位置に関係なく拒否する。
-  - `grep -f<workspace 外パス>` が workspace 外のファイルを読めていた。`-fPATH` や `--opt=PATH` の
-    ように**オプションに結合されたパス**は、トークン全体が `<workspace>/-f..` へ展開されて
-    workspace 内と判定されていたため。`option_value_paths/1` で値を取り出して `Policy` に通す。
-  - `git --git-dir=../store --work-tree=../outside status` が workspace 外を列挙できていた。
-    subcommand allow-list は `status` しか見ておらず、「どこがリポジトリか」を差し替える option を
-    見ていなかったため。`@root_repointing_options` で per-program に拒否する。
-    `-c`（config、拒否）と `-C`（chdir、許可）の非対称は意図的で、テストで固定している。
-  - program token に `/` を含む形（`./pwd`、`tmp/pwd`）を拒否。`Path.basename/1` で allow-list 照合
-    しつつ元の文字列を実行していた検証・実行の不一致を解消（悪用可能ではなかったが境界を揃えた）。
-  - `@allowed_shell_commands` / `@allowed_git_subcommands` / `@forbidden_shell_syntax` /
-    `@dangerous_command_patterns` は Spec C 時点からバイト一致で不変。
-  - 挙動変更: `git --git-dir=...` の拒否理由が `:outside_workspace` から `:dangerous_command` に変わる。
-    option 検査が path 検査より先に走るため、引数が workspace 外かどうかに関わらず拒否する。
+- コマンド引数文法を hardening（Spec C-1、2026-08-27）。`shell_command` の引数検査を
+  **プログラム別 grammar allow-list**（`@program_grammar`）に置き換えた。
+  - 契機は Spec C 実装後の Codex レビューで見つかった 3 件の迂回（`sed -E -i.bak` による
+    無承認書き込み、`grep -f<外部パス>` による workspace 外読み取り、`git --git-dir`/`--work-tree`
+    による workspace 外の列挙）。いずれも Spec C の regression ではなく `main` 由来。
+  - **最初の実装（deny-list）は棄却した。** 危険オプションを列挙し `Map.get(program, [])` で
+    引く方式は、列挙しなかったオプションが無制限に通る fail-open だった。2 回目のレビューで
+    `rg --pre=./hook`（**子プロセスの実行**）、`sed -Ei.bak` / `sed -ni.bak`（bundled 短オプションで
+    位置依存 deny-list を回避し**書き込み**）、`grep -nf<外部>` / `rg -nf<外部>`（**外部読み取り**）、
+    `sed -n 1w<外部>`（**外部書き込み**）、`git --config-env`、`git diff --output`（**ファイル切り詰め**）、
+    `rg -L` / `ls -LR`（symlink 追跡で外部へ）が実行到達することを確認した。
+  - 採用した方式では、**grammar が名前を挙げたオプションだけ**が通る。`short` は
+    単一文字キーなので bundle が正しく分解され、値は `:path`（`Policy` で解決）/ `:pattern` /
+    `:literal` に分類される。`--` 以降は operand。未知オプション・未知プログラムは
+    `Map.fetch/2` の `:error` として拒否される（予測ではなく不在による拒否）。
+  - `sed` を `@allowed_shell_commands` から削除。script 言語で `w`/`r`/`e` と `-f` を持ち、
+    安全性判定には sed script のパーサが要るため。読み取り用途は `grep`/`rg` で代替できる。
+    allow-list は `~w(pwd ls cat grep rg git)` に**縮小**（拡大ではない）。
+  - deny-list 版が作り込んだ過剰拒否も解消した。`-e` / `--regexp` の値は**検索パターン**であって
+    パスではないため、`grep -e/etc/passwd` は正しく許可される。
+  - `@allowed_shell_commands` は `Map.keys(@program_grammar)` とコンパイル時に一致を検査する。
+  - `@forbidden_shell_syntax` / `@dangerous_command_patterns` は Spec C 時点からバイト一致で不変
+    （first-pass の文字列フィルタとして維持）。
 
 - tool 境界を hardening（Spec C、2026-08-27）。
   - 承認済み `shell_command` を `sh -lc` 経由から **argv 直実行**に変更。`Policy.command_argv/1` を

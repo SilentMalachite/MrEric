@@ -100,19 +100,24 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
 ### Safety boundaries (enforced, not optional)
 - File access stays inside the configured workspace. `MrEric.Tools.Policy` protects `.env*`,
   private keys (`.pem`/`.key`), credential/token/secret paths, `.git`, and `.ssh`.
-- `:shell_command` is restricted to a read-oriented allowlist + read-only git subcommands,
+- `:shell_command` is restricted to a read-oriented allowlist (`pwd ls cat grep rg git` —
+  `sed` is deliberately excluded, its script language can read/write/execute) + read-only git
+  subcommands,
   rejects shell expansion/redirection/mutating commands, and passes only an **env-var
   allowlist** to children (config key `:shell_env_allowlist`) so secrets don't leak.
   Approved commands are executed as a **direct argv vector** (`Policy.command_argv/1` →
   `System.cmd/3`) — there is no shell process, so nothing re-parses the validated string and
   no login-shell profile is sourced. `ShellCommand.run/2` re-runs `Policy.authorize/3` itself,
   so the boundary holds even when the tool is called without `Executor`.
-  Argument grammar is bounded too: paths carried inside option tokens (`-fPATH`,
-  `--opt=PATH`) are resolved through `Policy`, mutating options (`sed -i`) are rejected on the
-  argv vector position-independently, root-repointing options (`git --git-dir`/`--work-tree`/
-  `-c`) are rejected per-program, and the program token must be a bare allow-listed name.
-  Adding a program to `@allowed_shell_commands` requires a `@mutating_options` /
-  `@root_repointing_options` entry, or a written argument for why none is needed.
+  Argument grammar is bounded by `@program_grammar`: an option is accepted **only if the
+  program's table names it**, so unknown options (`rg --pre`, `git --config-env`,
+  `git diff --output`, `rg -L`) are refused by absence rather than by having been predicted.
+  `short` is keyed by single characters so bundles decompose (`-nf../x` is `-n` then
+  `-f ../x`). Each value is classified `:path` (resolved through `Policy`), `:pattern`, or
+  `:literal`; `--` stops option parsing. The program token must be a bare allow-listed name.
+  **Never give a grammar lookup a default** — `Map.get(table, key, [])` is what made the
+  earlier deny-list fail open. `@allowed_shell_commands` is pinned to `Map.keys(@program_grammar)`
+  by a compile-time check.
 - Never put API keys, auth headers, cookies, provider secrets, or `reply_to` pids into PubSub
   events, assigns, templates, user-facing logs, traces, or eval output.
 
