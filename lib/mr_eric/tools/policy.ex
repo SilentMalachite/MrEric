@@ -115,6 +115,23 @@ defmodule MrEric.Tools.Policy do
     Map.get(args, key) || Map.get(args, Atom.to_string(key))
   end
 
+  @doc """
+  Splits an already-authorized command string into an argv vector.
+
+  Uses the same tokenizer as `authorize/3`, so the argv that gets executed is by
+  construction the argv that was validated. This performs no safety checks of
+  its own — callers must run `authorize/3` first.
+  """
+  @spec command_argv(term()) :: {:ok, [String.t(), ...]} | {:error, :invalid_args}
+  def command_argv(command) when is_binary(command) do
+    case command_tokens(command) do
+      [] -> {:error, :invalid_args}
+      tokens -> {:ok, tokens}
+    end
+  end
+
+  def command_argv(_command), do: {:error, :invalid_args}
+
   defp authorize_tool("file_read", args, opts) do
     with {:ok, _path} <- resolve_workspace_path(arg(args, :path), opts) do
       {:ok, %{approval_required?: false}}
@@ -289,23 +306,19 @@ defmodule MrEric.Tools.Policy do
   end
 
   defp ensure_allowed_shell_command(command) do
-    case command_tokens(command) do
-      [] ->
-        {:error, :invalid_args}
+    with {:ok, [program | args]} <- command_argv(command) do
+      program = Path.basename(program)
 
-      [command_name | args] ->
-        command_name = command_name |> Path.basename()
+      cond do
+        program not in @allowed_shell_commands ->
+          {:error, :dangerous_command}
 
-        cond do
-          command_name not in @allowed_shell_commands ->
-            {:error, :dangerous_command}
+        program == "git" and git_subcommand(args) not in @allowed_git_subcommands ->
+          {:error, :dangerous_command}
 
-          command_name == "git" and git_subcommand(args) not in @allowed_git_subcommands ->
-            {:error, :dangerous_command}
-
-          true ->
-            :ok
-        end
+        true ->
+          :ok
+      end
     end
   end
 
@@ -319,14 +332,14 @@ defmodule MrEric.Tools.Policy do
   defp git_subcommand([]), do: nil
 
   defp ensure_command_paths_allowed(command, opts) do
-    command
-    |> command_tokens()
-    |> Enum.reduce_while(:ok, fn token, :ok ->
-      case validate_command_token_path(token, opts) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    with {:ok, tokens} <- command_argv(command) do
+      Enum.reduce_while(tokens, :ok, fn token, :ok ->
+        case validate_command_token_path(token, opts) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
   end
 
   defp command_tokens(command) do

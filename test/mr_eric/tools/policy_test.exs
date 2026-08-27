@@ -168,6 +168,40 @@ defmodule MrEric.Tools.PolicyTest do
              )
   end
 
+  describe "command_argv/1 (Spec C)" do
+    test "splits a command into an argv vector" do
+      assert {:ok, ["grep", "-rn", "needle", "lib"]} =
+               Policy.command_argv("grep -rn needle lib")
+    end
+
+    test "collapses repeated and surrounding whitespace" do
+      assert {:ok, ["ls", "-la"]} = Policy.command_argv("  ls   -la  ")
+    end
+
+    test "returns invalid_args for empty or non-binary input" do
+      assert {:error, :invalid_args} = Policy.command_argv("")
+      assert {:error, :invalid_args} = Policy.command_argv("   ")
+      assert {:error, :invalid_args} = Policy.command_argv(nil)
+      assert {:error, :invalid_args} = Policy.command_argv(:pwd)
+    end
+
+    test "the argv head is the program authorize/3 allow-listed", %{workspace: workspace} do
+      for {command, program} <- [
+            {"pwd", "pwd"},
+            {"ls -la", "ls"},
+            {"cat note.txt", "cat"},
+            {"git status --short", "git"}
+          ] do
+        assert {:ok, %{approval_required?: true}} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 )
+
+        assert {:ok, [^program | _rest]} = Policy.command_argv(command)
+      end
+    end
+  end
+
   describe "secret_path?/1 (public)" do
     test "true for .env at repo root" do
       assert MrEric.Tools.Policy.secret_path?(".env")
