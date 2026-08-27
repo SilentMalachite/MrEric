@@ -95,10 +95,14 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     send(pid, {:run_completed, %{final: "done"}})
     assert :sys.get_state(pid).reap_scheduled?
 
-    # A rogue orchestrator replaying :run_started after a terminal event puts
-    # the run back to :running with the reap already scheduled. That is the one
-    # way a :reap can land on a non-terminal run with the flag set.
-    send(pid, {:run_started, %{task: "replayed"}})
+    # A run that has gone terminal can no longer be put back to a live status
+    # through the mailbox: @reviving_events are dropped once Run.terminal?/1
+    # holds (see "a late stage_chunk cannot revive a completed run"). So the
+    # state below -- non-terminal with the reap already scheduled -- is forced
+    # rather than driven by an event. Clearing the flag stays defence in depth:
+    # it is what keeps a spent :reap from short-circuiting maybe_schedule_reap/1
+    # forever, and it must not rot just because its one former route is closed.
+    :sys.replace_state(pid, fn state -> put_in(state.run.status, :running) end)
     state = :sys.get_state(pid)
     refute Run.terminal?(state.run)
     assert state.reap_scheduled?
@@ -398,5 +402,58 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
       refute_receive {:stage_chunk, %{run_id: ^run_id}}, 300
       assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
     end
+  end
+
+  # The :cancelled? flag covers the three paths that kill the task themselves.
+  # A run that finished *normally* never sets it, so a straggler from a
+  # parallel stage still had a way back into Run.do_apply_event/3.
+  test "a late stage_chunk cannot revive a completed run" do
+    run_id = "run-late-chunk-#{System.unique_integer([:positive])}"
+    run = Run.new("completes", owner_id: "lifetime-owner", id: run_id)
+
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [terminal_run_ttl_ms: 5_000, skip_history: true],
+        auto_start: false,
+        name: nil
+      )
+
+    send(pid, {:run_completed, %{final: "done"}})
+    assert_receive {:run_completed, %{run_id: ^run_id}}, @wait_ms
+
+    send(pid, {:stage_chunk, %{role: :local_drafter, chunk: "straggler"}})
+
+    refute_receive {:stage_chunk, %{run_id: ^run_id}}, 300
+    assert {:ok, %Run{status: :completed}} = RunWorker.get_run(pid)
+  end
+
+  # RunWorker's @reviving_events has to name exactly the events that
+  # Run.do_apply_event/3 will take back out of a terminal status. `Run` is the
+  # authority and a frozen file, so pin the list to its behaviour instead of
+  # trusting a hand-kept copy: a new reviving event added there fails here
+  # rather than slipping silently past the guard.
+  test "the reviving-event list matches what Run actually un-terminalises" do
+    completed =
+      "probe"
+      |> Run.new(
+        owner_id: "lifetime-owner",
+        id: "run-probe-#{System.unique_integer([:positive])}"
+      )
+      |> Run.apply_event({:run_completed, %{final: "done"}})
+
+    reviving =
+      MrEric.Runs.Events.names()
+      |> Enum.reject(&Run.terminal?(Run.apply_event(completed, {&1, %{role: :planner}})))
+      |> Enum.sort()
+
+    assert reviving == [
+             :run_started,
+             :stage_chunk,
+             :stage_started,
+             :tool_approval_requested
+           ]
   end
 end

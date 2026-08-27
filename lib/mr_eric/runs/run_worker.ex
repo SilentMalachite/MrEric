@@ -15,6 +15,14 @@ defmodule MrEric.Runs.RunWorker do
 
   @registry MrEric.Runs.Registry
   @run_events Events.names()
+
+  # The run events that put a terminal run back to a live status. `Run` is the
+  # authority on which those are, and it is a frozen file, so the list is
+  # pinned to its actual behaviour by a test in run_worker_lifetime_test.exs
+  # rather than restated by hand here. `:tool_completed` is deliberately
+  # absent — it never touches `status`, and a late one still carries
+  # `changed_files` worth recording.
+  @reviving_events [:run_started, :stage_started, :stage_chunk, :tool_approval_requested]
   @public_tool_keys [
     :approval_id,
     :tool_call_id,
@@ -278,25 +286,22 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_info({event, payload}, state) when event in @run_events do
-    if state.cancelled? and event != :run_cancelled do
-      {:noreply, state}
-    else
-      {event, payload} = Events.normalize_event(state.run.id, {event, payload})
+    cond do
+      state.cancelled? and event != :run_cancelled ->
+        {:noreply, state}
 
-      run = Run.apply_event(state.run, {event, payload})
+      # A terminal run's outcome is final. These four are the only events
+      # Run.do_apply_event/3 lets move a run back to a live status, and it
+      # applies them unconditionally, so a straggler from a parallel stage
+      # would otherwise un-terminalise a run that already finished — stranding
+      # its supervisor slot and re-opening handle_tool_request/2. The
+      # :cancelled? flag covers only the paths that kill the task themselves;
+      # a run that completed normally never sets it.
+      event in @reviving_events and Run.terminal?(state.run) ->
+        {:noreply, state}
 
-      state =
-        state
-        |> put_run(run)
-        |> maybe_resolve_pending_tool_approvals(event)
-
-      state =
-        state
-        |> maybe_record_history(event)
-
-      Events.broadcast(run.id, {event, payload})
-
-      {:noreply, state}
+      true ->
+        apply_run_event(event, payload, state)
     end
   end
 
@@ -427,6 +432,22 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_info({:EXIT, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  defp apply_run_event(event, payload, state) do
+    {event, payload} = Events.normalize_event(state.run.id, {event, payload})
+
+    run = Run.apply_event(state.run, {event, payload})
+
+    state =
+      state
+      |> put_run(run)
+      |> maybe_resolve_pending_tool_approvals(event)
+      |> maybe_record_history(event)
+
+    Events.broadcast(run.id, {event, payload})
+
     {:noreply, state}
   end
 
