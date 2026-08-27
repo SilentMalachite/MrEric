@@ -6,6 +6,8 @@ defmodule MrEric.RAG.Chunker do
   @default_chunk_size 1_600
   @default_chunk_overlap 160
 
+  @token_regex ~r/[[:alnum:]_]+/u
+
   def chunk_text(path, text, opts \\ [])
 
   def chunk_text(path, text, opts) when is_binary(path) and is_binary(text) do
@@ -23,6 +25,28 @@ defmodule MrEric.RAG.Chunker do
   end
 
   def chunk_text(_path, _text, _opts), do: []
+
+  @doc """
+  Term frequencies for `text`, in the shape `MrEric.RAG.Retriever` scores from.
+
+  Tokens are downcased, at least two characters long, and **deduplicated
+  before counting** -- so every value is `1`. That is not an oversight: the
+  retriever's own tokenizer has always ended in `Enum.uniq/1` before
+  `Enum.frequencies/1` was applied to it, so the lexical score counts distinct
+  query tokens present rather than occurrences. Counting occurrences here
+  would change every ranking; whether it should is a retrieval-quality
+  question, and Spec E puts those out of scope.
+  """
+  def term_frequencies(text) when is_binary(text) do
+    @token_regex
+    |> Regex.scan(String.downcase(text))
+    |> List.flatten()
+    |> Enum.filter(&(String.length(&1) >= 2))
+    |> Enum.uniq()
+    |> Enum.frequencies()
+  end
+
+  def term_frequencies(_text), do: %{}
 
   defp build_chunks([], _path, _start_line, _chunk_size, _chunk_overlap, acc) do
     Enum.reverse(acc)
@@ -103,7 +127,9 @@ defmodule MrEric.RAG.Chunker do
       path: path,
       start_line: start_line,
       end_line: end_line,
-      content: content
+      content: content,
+      terms: term_frequencies(content),
+      path_terms: term_frequencies(path)
     }
   end
 
