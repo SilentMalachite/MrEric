@@ -228,8 +228,18 @@ defmodule MrEric.Evals.Runner do
 
   defp ensure_eval_supervisor_started do
     case RunSupervisor.start_link(name: @eval_supervisor, max_children: @eval_max_children) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      # Anything else is a start failure, not a shape to guess at. Say which
+      # supervisor and why, rather than letting a CaseClauseError surface from
+      # inside the harness with the reason buried in the term.
+      other ->
+        raise "could not start the eval run supervisor #{inspect(@eval_supervisor)}: " <>
+                inspect(other)
     end
   end
 end
