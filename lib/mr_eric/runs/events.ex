@@ -69,6 +69,12 @@ defmodule MrEric.Runs.Events do
   def public_error(:mcp_unavailable), do: "MCP is unavailable or disabled."
   def public_error(:rag_failed), do: "Project context lookup failed."
 
+  def public_error(:too_many_runs),
+    do: "Too many runs are already in progress. Wait for one to finish, then try again."
+
+  def public_error(:run_lifetime_exceeded),
+    do: "The run exceeded its maximum lifetime and was stopped."
+
   def public_error(%{reason: reason}), do: public_error(reason)
 
   def public_error(%{status: 401}),

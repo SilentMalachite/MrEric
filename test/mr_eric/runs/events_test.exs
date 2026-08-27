@@ -17,4 +17,19 @@ defmodule MrEric.Runs.EventsTest do
     assert payload.approval_id == "a"
     assert payload.reason == :ttl
   end
+
+  test "public_error/1 explains a refused run without leaking OTP internals" do
+    message = MrEric.Runs.Events.public_error(:too_many_runs)
+
+    assert is_binary(message)
+    assert message =~ "Too many runs"
+    refute message =~ "max_children"
+  end
+
+  test "public_error/1 explains a run stopped at its absolute deadline" do
+    message = MrEric.Runs.Events.public_error(:run_lifetime_exceeded)
+
+    assert is_binary(message)
+    assert message =~ "maximum lifetime"
+  end
 end
