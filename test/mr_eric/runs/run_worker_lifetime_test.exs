@@ -432,9 +432,11 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
   # RunWorker's @reviving_events has to name exactly the events that
   # Run.do_apply_event/3 will take back out of a terminal status. `Run` is the
-  # authority and a frozen file, so pin the list to its behaviour instead of
-  # trusting a hand-kept copy: a new reviving event added there fails here
-  # rather than slipping silently past the guard.
+  # authority and a frozen file, so this test derives that set independently
+  # -- by probing every event name against Run's actual behaviour -- and
+  # pins RunWorker.reviving_events/0 to it in both directions: a reviving
+  # event `Run` gains that @reviving_events is missing fails here, and so
+  # does one removed from @reviving_events that `Run` still revives on.
   test "the reviving-event list matches what Run actually un-terminalises" do
     completed =
       "probe"
@@ -449,11 +451,6 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
       |> Enum.reject(&Run.terminal?(Run.apply_event(completed, {&1, %{role: :planner}})))
       |> Enum.sort()
 
-    assert reviving == [
-             :run_started,
-             :stage_chunk,
-             :stage_started,
-             :tool_approval_requested
-           ]
+    assert reviving == Enum.sort(RunWorker.reviving_events())
   end
 end

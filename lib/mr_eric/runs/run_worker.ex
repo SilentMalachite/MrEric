@@ -17,12 +17,18 @@ defmodule MrEric.Runs.RunWorker do
   @run_events Events.names()
 
   # The run events that put a terminal run back to a live status. `Run` is the
-  # authority on which those are, and it is a frozen file, so the list is
-  # pinned to its actual behaviour by a test in run_worker_lifetime_test.exs
-  # rather than restated by hand here. `:tool_completed` is deliberately
-  # absent — it never touches `status`, and a late one still carries
-  # `changed_files` worth recording.
+  # authority on which those are, and it is a frozen file, so this list is
+  # pinned to Run's actual behaviour by a test in run_worker_lifetime_test.exs,
+  # which asserts its independently-derived set against reviving_events/0
+  # below -- not a hand-typed copy -- so either adding to or removing from
+  # this list without a matching change in `Run` fails that test.
+  # `:tool_completed` is deliberately absent — it never touches `status`, and
+  # a late one still carries `changed_files` worth recording.
   @reviving_events [:run_started, :stage_started, :stage_chunk, :tool_approval_requested]
+
+  @doc false
+  def reviving_events, do: @reviving_events
+
   @public_tool_keys [
     :approval_id,
     :tool_call_id,
@@ -348,11 +354,15 @@ defmodule MrEric.Runs.RunWorker do
       shutdown_task(state.task)
       {:stop, :normal, state}
     else
-      # This :reap belonged to a terminal status that is no longer current, so
-      # its timer is spent. Clearing the flag lets maybe_schedule_reap/1 arm a
-      # fresh one the next time the run goes terminal; leaving it set would
-      # short-circuit that scheduler forever and strand the worker's slot until
-      # the hard deadline.
+      # A terminal run can no longer be put back to a live status through the
+      # mailbox -- the guard above drops every @reviving_events event once
+      # Run.terminal?/1 holds -- so the one former route into this branch is
+      # closed. It stays as defence in depth for totality: a stray or
+      # duplicate :reap that lands on a non-terminal run (reap_scheduled?:
+      # true forced by some other path, not by a revival) still reaches here.
+      # Clearing the flag is what matters when it does -- left set, it would
+      # permanently short-circuit maybe_schedule_reap/1 and strand this
+      # worker's supervisor slot until the hard deadline.
       {:noreply, %{state | reap_scheduled?: false}}
     end
   end
