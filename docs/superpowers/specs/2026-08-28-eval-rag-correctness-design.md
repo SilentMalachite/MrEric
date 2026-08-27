@@ -233,7 +233,11 @@ otherwise:
 
 Two changes to `Retriever`, and they only pay off together.
 
-`Chunker.chunk_text/3` attaches `:terms` (`%{term => count}`) and `:path_terms` to each chunk; `Retriever.score/3` reads them instead of recomputing.
+`Chunker.chunk_text/3` attaches `:terms` and `:path_terms` to each chunk; `Retriever.score/3` reads them instead of recomputing.
+
+**`:terms` must be built the way `Retriever` builds them today, not the way the name suggests.** `Retriever.tokenize/1` ends in `Enum.uniq/1` (`retriever.ex:53`), and `score/3` then calls `Enum.frequencies/1` on that already-deduplicated list (`retriever.ex:30-31`) — so every "frequency" in the shipping scorer is `1`, and the lexical score counts *distinct* query tokens present, not occurrences. Storing real occurrence counts would silently change every ranking. `:terms` is therefore `content |> tokenize() |> Enum.frequencies()` with `tokenize/1` unchanged, uniq included, and the values are all `1`. Memory is unaffected: the key set is identical and small integers are immediates.
+
+Whether counting occurrences would retrieve better is a retrieval-quality question, and §8 puts those outside this spec. Recorded here so the `1`s are not later "fixed" into a ranking change nobody asked for.
 
 `Retriever.search/3` then computes the lexical score for every chunk, **filters to `score > 0`, and applies `exact_bonus` only to the survivors**. This is behaviour-preserving: `exact_bonus` fires when the chunk's downcased content contains the whole downcased query, which implies the content contains every query token, which implies a non-zero lexical score. `exact_bonus > 0 ⟹ lexical_score > 0`, so the survivors are a superset of the chunks the bonus can reach. (The degenerate case — a query whose tokens are all shorter than two characters — already returns `[]` before scoring.)
 
@@ -248,7 +252,7 @@ Measured on this repository's 819-chunk index (min of 7 trials, 15 iterations ea
 
 Each change alone leaves the other cost dominating: with live tokenization the bonus is not the bottleneck (C adds a pass and loses), and with the bonus still running over all 819 chunks the per-query `String.downcase/1` over 1.16 MiB dominates (B). Doing only one of them is not worth 4 MiB of resident memory; doing both is.
 
-The variants were checked for equivalence over eight queries — including a no-match query, a single-token query, a stop-word query, and a punctuated one — and A, B, C, and D return identical `{path, start_line, score}` triples in identical order in every case.
+That A/B/C/D comparison was made between four variants written for the benchmark, so it only shows the two changes are complementary. The claim that matters — the proposal returns what the code returns today — was checked separately against `MrEric.RAG.Retriever.search/3` itself, with `:terms` built the uniq-preserving way described above: **identical `{path, start_line, score}` triples in identical order across ten queries**, including a no-match query, a single-token query, a stop-word query, a punctuated one, and the degenerate `"a"` (all tokens shorter than two characters → no hits). Against the shipping function the speedup measures **17.3×** (149.03 ms → 8.63 ms).
 
 A chunk without `:terms` — one handed in through `opts[:rag_index]` by a caller holding an older shape — gets its frequencies computed in an explicit fallback clause. This is a *performance* fallback and is safe: the value it computes is the same value the index would have stored. It is not the "lookup with a default" pattern Spec C-1 banned, because nothing about a boundary depends on it. The distinction is stated here so a later reader does not delete it for the wrong reason, or add a similar default somewhere it *would* matter.
 
