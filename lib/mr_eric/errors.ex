@@ -126,7 +126,7 @@ defmodule MrEric.Errors do
         "MCP is unavailable or disabled."
 
       :run_limit_reached ->
-        "Too many runs are already in progress."
+        "Too many recent runs. Wait about a minute for a slot to free up."
 
       :cancelled ->
         "Run cancelled."

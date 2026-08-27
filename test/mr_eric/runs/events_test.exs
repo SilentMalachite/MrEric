@@ -22,7 +22,13 @@ defmodule MrEric.Runs.EventsTest do
     message = MrEric.Runs.Events.public_error(:too_many_runs)
 
     assert is_binary(message)
-    assert message =~ "Too many runs"
+    assert message =~ "Too many recent runs"
+
+    # The cap counts workers, not streaming runs, so the copy must stay true
+    # when every blocking run has already finished and is only waiting to be
+    # reaped -- it must not tell the user to wait for a run to finish.
+    assert message =~ "slot to free up"
+    refute message =~ "in progress"
     refute message =~ "max_children"
   end
 

@@ -69,8 +69,12 @@ defmodule MrEric.Runs.Events do
   def public_error(:mcp_unavailable), do: "MCP is unavailable or disabled."
   def public_error(:rag_failed), do: "Project context lookup failed."
 
+  # The cap counts supervised workers, and a finished run keeps its worker for
+  # `terminal_run_ttl_ms` after it ends. So the blocking runs may all have
+  # finished already, and "wait for one to finish" would be advice that cannot
+  # work. Point at the wait that does.
   def public_error(:too_many_runs),
-    do: "Too many runs are already in progress. Wait for one to finish, then try again."
+    do: "Too many recent runs. Wait about a minute for a slot to free up, then try again."
 
   def public_error(:run_lifetime_exceeded),
     do: "The run exceeded its maximum lifetime and was stopped."
