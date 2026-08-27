@@ -40,7 +40,9 @@ defmodule MrEric.Tools.Policy do
       short: %{"s" => :flag, "b" => :flag, "z" => :flag},
       long: %{
         "--short" => :flag,
-        "--branch" => :flag,
+        # `--branch` is deliberately absent: the frozen @dangerous_command_patterns
+        # rule `git\b.*\b(...|branch|...)\b` matches the option name, so the entry
+        # would be unreachable. The short spelling `-b` is not shadowed.
         "--porcelain" => :flag,
         "--long" => :flag,
         # `--untracked-files[=<mode>]` -- optional value.
@@ -356,6 +358,11 @@ defmodule MrEric.Tools.Policy do
   end
 
   def command_argv(_command), do: {:error, :invalid_args}
+
+  @doc false
+  # Read-only view of the argument grammar, for the table-driven test that
+  # asserts every entry behaves per its declared value kind. Not public API.
+  def __grammar__, do: %{programs: @program_grammar, git_subcommands: @git_subcommands}
 
   defp authorize_tool("file_read", args, opts) do
     with {:ok, _path} <- resolve_workspace_path(arg(args, :path), opts) do

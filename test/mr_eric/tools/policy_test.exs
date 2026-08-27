@@ -297,6 +297,109 @@ defmodule MrEric.Tools.PolicyTest do
     end
   end
 
+  describe "every grammar entry behaves per its declared kind (Spec C-1 rev 2)" do
+    # AR-005: the hand-written guard list covered 14 commands against ~100 table
+    # entries, and all three HIGH findings lived in entries with zero coverage.
+    # This derives the cases from the table so a future entry cannot land unseen.
+    @grammar MrEric.Tools.Policy.__grammar__()
+
+    defp entries do
+      programs =
+        for {program, g} <- @grammar.programs,
+            g.operands |> is_tuple() |> Kernel.!(),
+            entry <- flatten(program, g),
+            do: entry
+
+      gits =
+        for {sub, g} <- @grammar.git_subcommands,
+            entry <- flatten("git #{sub}", g),
+            do: entry
+
+      globals = flatten("git", %{short: @grammar.programs["git"].short, long: @grammar.programs["git"].long})
+
+      programs ++ gits ++ globals
+    end
+
+    defp flatten(prefix, g) do
+      shorts = for {c, kind} <- Map.get(g, :short, %{}), do: {prefix, {:short, c}, kind}
+      longs = for {n, kind} <- Map.get(g, :long, %{}), do: {prefix, {:long, n}, kind}
+      shorts ++ longs
+    end
+
+    defp auth(command, workspace),
+      do: Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace)
+
+    test "every enumerated option is reachable, i.e. not refused as unknown", %{
+      workspace: workspace
+    } do
+      for {prefix, opt, kind} <- entries() do
+        command =
+          case {opt, kind} do
+            {{:short, c}, :flag} -> "#{prefix} -#{c}"
+            {{:long, n}, :flag} -> "#{prefix} #{n}"
+            {{:short, c}, _} -> "#{prefix} -#{c}value"
+            {{:long, n}, _} -> "#{prefix} #{n}=value"
+          end
+
+        refute match?({:error, :dangerous_command}, auth(command, workspace)),
+               "#{command} should be reachable in the grammar"
+      end
+    end
+
+    test "every path-kind option refuses an escaping value in all its forms", %{
+      workspace: workspace
+    } do
+      for {prefix, opt, kind} <- entries(), kind in [:path, :path_pattern_source] do
+        commands =
+          case opt do
+            {:short, c} -> ["#{prefix} -#{c}../outside", "#{prefix} -#{c} ../outside"]
+            {:long, n} -> ["#{prefix} #{n}=../outside", "#{prefix} #{n} ../outside"]
+          end
+
+        for command <- commands do
+          assert {:error, :outside_workspace} = auth(command, workspace),
+                 "#{command} should be refused as outside_workspace"
+        end
+      end
+    end
+
+    test "every mandatory-value option is invalid_args with no value", %{workspace: workspace} do
+      for {prefix, opt, kind} <- entries(),
+          kind in [:path, :path_pattern_source, :pattern, :literal] do
+        command =
+          case opt do
+            {:short, c} -> "#{prefix} -#{c}"
+            {:long, n} -> "#{prefix} #{n}"
+          end
+
+        assert {:error, :invalid_args} = auth(command, workspace),
+               "#{command} should be invalid_args (value required)"
+      end
+    end
+
+    test "every long :flag refuses an attached value", %{workspace: workspace} do
+      for {prefix, {:long, n}, :flag} <- entries() do
+        assert {:error, :dangerous_command} = auth("#{prefix} #{n}=value", workspace),
+               "#{prefix} #{n}=value should be refused (flag takes no value)"
+      end
+    end
+
+    test "every optional-value option works bare and attached", %{workspace: workspace} do
+      for {prefix, opt, :literal_optional} <- entries() do
+        commands =
+          case opt do
+            {:short, c} -> ["#{prefix} -#{c}", "#{prefix} -#{c}auto"]
+            {:long, n} -> ["#{prefix} #{n}", "#{prefix} #{n}=auto"]
+          end
+
+        for command <- commands do
+          assert {:ok, %{approval_required?: true}} = auth(command, workspace),
+                 "#{command} should be allowed"
+        end
+      end
+    end
+  end
+
   describe "sed is off the allow-list (Spec C-1 rev 2)" do
     # sed is a scripting language: its scripts can write (`w`), read (`r`) and,
     # on GNU sed, execute (`e`), and `-f` loads a script from a file. Bounding
