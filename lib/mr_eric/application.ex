@@ -18,6 +18,7 @@ defmodule MrEric.Application do
       MrEric.Agent,
       {Registry, keys: :unique, name: MrEric.Runs.Registry},
       MrEric.Runs.RunSupervisor,
+      MrEric.RAG.Cache,
       MrEricWeb.Endpoint
     ]
 
