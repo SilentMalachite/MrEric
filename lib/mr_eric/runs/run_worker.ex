@@ -343,7 +343,12 @@ defmodule MrEric.Runs.RunWorker do
       shutdown_task(state.task)
       {:stop, :normal, state}
     else
-      {:noreply, state}
+      # This :reap belonged to a terminal status that is no longer current, so
+      # its timer is spent. Clearing the flag lets maybe_schedule_reap/1 arm a
+      # fresh one the next time the run goes terminal; leaving it set would
+      # short-circuit that scheduler forever and strand the worker's slot until
+      # the hard deadline.
+      {:noreply, %{state | reap_scheduled?: false}}
     end
   end
 

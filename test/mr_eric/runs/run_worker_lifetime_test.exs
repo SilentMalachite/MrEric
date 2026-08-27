@@ -83,6 +83,37 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
 
     refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 300
     assert Process.alive?(pid)
+    refute :sys.get_state(pid).reap_scheduled?
+  end
+
+  test "a spent :reap leaves the reap re-armable when the run left terminal status" do
+    # Long TTL so the only :reap the worker sees during this test is the one
+    # sent by hand -- the timing here is exact, not a race.
+    {_run, pid} = start_worker(terminal_run_ttl_ms: 5_000, skip_history: true)
+    ref = Process.monitor(pid)
+
+    send(pid, {:run_completed, %{final: "done"}})
+    assert :sys.get_state(pid).reap_scheduled?
+
+    # A rogue orchestrator replaying :run_started after a terminal event puts
+    # the run back to :running with the reap already scheduled. That is the one
+    # way a :reap can land on a non-terminal run with the flag set.
+    send(pid, {:run_started, %{task: "replayed"}})
+    state = :sys.get_state(pid)
+    refute Run.terminal?(state.run)
+    assert state.reap_scheduled?
+
+    # The scheduled :reap now arrives and correctly declines to stop a running
+    # worker -- but its timer is spent, so the flag has to come down with it.
+    # Left set, maybe_schedule_reap/1 short-circuits forever and this worker
+    # holds its supervisor slot until the hard deadline.
+    send(pid, :reap)
+    refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 300
+    refute :sys.get_state(pid).reap_scheduled?
+
+    # And the point of clearing it: the next terminal status arms a new stop.
+    send(pid, {:run_completed, %{final: "done again"}})
+    assert :sys.get_state(pid).reap_scheduled?
   end
 
   test "schedules the stop exactly once, even when late events arrive" do
