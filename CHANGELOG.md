@@ -11,7 +11,7 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は Spec A–C まで `main` に入っています。残りは Spec D–F です。
+監査由来のセキュリティ hardening は Spec A–C と Spec C-1 まで `main` に入っています。残りは Spec D–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
@@ -78,6 +78,26 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 - `mix precommit` は `compile --warning-as-errors`、`deps.unlock --unused`、`test` を実行する品質チェックとして整理。
 
 ### Security
+
+- コマンド引数文法を hardening（Spec C-1、2026-08-27）。Spec C 実装後の Codex レビューで発見し、
+  ブランチ上で実行して再現を確認した迂回 3 件を塞いだ。いずれも Spec C の regression ではなく
+  `main` 由来の既存欠陥。
+  - `sed -E -i.bak ...` が承認を通り、`apply_patch` の検証・承認フローを介さずファイルを直接書き換えていた。
+    deny-list が `~r/(^|\s)sed\s+-i/` と**位置依存**で、`sed` と `-i` の間に何か挟むと外れていたため。
+    argv ベースの `ensure_program_options_allowed/1` を追加し、位置に関係なく拒否する。
+  - `grep -f<workspace 外パス>` が workspace 外のファイルを読めていた。`-fPATH` や `--opt=PATH` の
+    ように**オプションに結合されたパス**は、トークン全体が `<workspace>/-f..` へ展開されて
+    workspace 内と判定されていたため。`option_value_paths/1` で値を取り出して `Policy` に通す。
+  - `git --git-dir=../store --work-tree=../outside status` が workspace 外を列挙できていた。
+    subcommand allow-list は `status` しか見ておらず、「どこがリポジトリか」を差し替える option を
+    見ていなかったため。`@root_repointing_options` で per-program に拒否する。
+    `-c`（config、拒否）と `-C`（chdir、許可）の非対称は意図的で、テストで固定している。
+  - program token に `/` を含む形（`./pwd`、`tmp/pwd`）を拒否。`Path.basename/1` で allow-list 照合
+    しつつ元の文字列を実行していた検証・実行の不一致を解消（悪用可能ではなかったが境界を揃えた）。
+  - `@allowed_shell_commands` / `@allowed_git_subcommands` / `@forbidden_shell_syntax` /
+    `@dangerous_command_patterns` は Spec C 時点からバイト一致で不変。
+  - 挙動変更: `git --git-dir=...` の拒否理由が `:outside_workspace` から `:dangerous_command` に変わる。
+    option 検査が path 検査より先に走るため、引数が workspace 外かどうかに関わらず拒否する。
 
 - tool 境界を hardening（Spec C、2026-08-27）。
   - 承認済み `shell_command` を `sh -lc` 経由から **argv 直実行**に変更。`Policy.command_argv/1` を

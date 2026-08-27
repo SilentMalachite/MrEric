@@ -107,6 +107,12 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   `System.cmd/3`) — there is no shell process, so nothing re-parses the validated string and
   no login-shell profile is sourced. `ShellCommand.run/2` re-runs `Policy.authorize/3` itself,
   so the boundary holds even when the tool is called without `Executor`.
+  Argument grammar is bounded too: paths carried inside option tokens (`-fPATH`,
+  `--opt=PATH`) are resolved through `Policy`, mutating options (`sed -i`) are rejected on the
+  argv vector position-independently, root-repointing options (`git --git-dir`/`--work-tree`/
+  `-c`) are rejected per-program, and the program token must be a bare allow-listed name.
+  Adding a program to `@allowed_shell_commands` requires a `@mutating_options` /
+  `@root_repointing_options` entry, or a written argument for why none is needed.
 - Never put API keys, auth headers, cookies, provider secrets, or `reply_to` pids into PubSub
   events, assigns, templates, user-facing logs, traces, or eval output.
 
