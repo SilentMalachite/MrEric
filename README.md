@@ -17,6 +17,7 @@ Phoenix LiveView を用いた AI エージェントアプリケーションで�
 - [Deterministic Evals](#deterministic-evals)
 - [開発とテスト](#開発とテスト)
 - [アーキテクチャ](#アーキテクチャ)
+- [ドキュメント](#ドキュメント)
 - [デプロイ](#デプロイ)
 - [トラブルシュート](#トラブルシュート)
 - [ライセンス](#ライセンス)
@@ -121,6 +122,8 @@ MrEric.OpenAIClient.list_models(:openai, [])
 
 ### Elixir API
 
+詳細は [docs/API.md](./docs/API.md) を参照してください。
+
 ```elixir
 # タスク実行
 {:ok, result} = MrEric.execute_task("Create a simple Phoenix controller")
@@ -208,12 +211,18 @@ config :mr_eric, :shell_env_allowlist,
 実ファイルへの書き込みは `apply_patch` だけが行い、必ず承認後に実行されます。validation は承認前と適用直前の 2 回走ります。
 
 ```elixir
+owner_id = "owner-123"
+
 {:approval_required, request} =
-  MrEric.Tools.Executor.execute(:apply_patch, %{
-    changes: [
-      %{path: "README.md", before: "old text\n", after: "new text\n"}
-    ]
-  })
+  MrEric.Tools.Executor.execute(
+    :apply_patch,
+    %{
+      changes: [
+        %{path: "README.md", before: "old text\n", after: "new text\n"}
+      ]
+    },
+    owner_id: owner_id
+  )
 
 MrEric.Tools.Executor.execute_approved(request)
 ```
@@ -340,6 +349,20 @@ MrEric/
 | `MrEric.MCP` | MCP interface-level extension point |
 | `MrEricWeb.AgentLive` | メイン LiveView、Run UI、approval UI |
 
+## ドキュメント
+
+| 文書 | 内容 |
+|------|------|
+| [README](./README.md) | セットアップ、使い方、アーキテクチャ |
+| [docs/API.md](./docs/API.md) | プログラマティック API |
+| [AGENTS.md](./AGENTS.md) | 実装時の安全境界とコーディング規約 |
+| [CLAUDE.md](./CLAUDE.md) | エージェント向けの全体像 |
+| [docs/superpowers/README.md](./docs/superpowers/README.md) | 監査 spec A–F の進捗と次の作業 |
+| [CHANGELOG.md](./CHANGELOG.md) | 変更履歴 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 貢献手順 |
+
+セキュリティ監査の Spec A（秘密情報衛生）と Spec B（Run 所有権）は `main` に入っています。次は Spec C（tool 境界の hardening）です。Phase 7 の高度 RAG、Phase 8 の実 MCP、永続化、マルチユーザー認証は明示的に対象外です。
+
 ## デプロイ
 
 ### 本番環境のビルド
@@ -442,5 +465,5 @@ mix precommit
 
 ---
 
-最終更新: 2026-06-07
+最終更新: 2026-08-27
 バージョン: 0.1.0

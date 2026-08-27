@@ -31,7 +31,8 @@ This is a Phoenix LiveView web application for orchestrating AI-agent runs.
 
 ## Runs And Events
 
-- Start realtime execution through `MrEric.Runs.start_run/2`; it creates one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor`.
+- Start realtime execution through `MrEric.Runs.start_run/3` (`task`, `owner_id`, `opts`). It creates one `MrEric.Runs.RunWorker` under `MrEric.Runs.RunSupervisor`.
+- `owner_id` is required on `start_run/3`, `cancel_run/2`, `approve_tool/3`, and `deny_tool/3`. `MrEric.Runs.OwnerCheck.verify/2` enforces it. Non-owners get `{:error, :not_owner}` and the Run must not change.
 - `RunWorker` owns in-memory Run state, calls `MrEric.Orchestrator.stream(task, self(), opts)` in a task, applies events, broadcasts sanitized PubSub events, records completed runs, and ignores late chunks after cancellation.
 - Run state is intentionally in-memory because this app currently has no Ecto repo configured. Do not add persistence unless the surrounding data layer changes.
 - PubSub topics must be named exactly `"runs:#{run_id}"`.
@@ -46,7 +47,7 @@ This is a Phoenix LiveView web application for orchestrating AI-agent runs.
 - All tool execution must go through `MrEric.Tools.Executor`, which calls `MrEric.Tools.Policy` before running a tool.
 - `:file_write_proposal` may return proposed content and a diff, but it must not modify the filesystem.
 - `:shell_command` must stay on a read-oriented allowlist plus read-only git subcommands, and must reject shell expansion, redirection, mutating commands, and unlisted commands.
-- Tool PubSub events use the current run topic and include `:tool_started`, `:tool_approval_requested`, `:tool_approval_resolved`, `:tool_completed`, `:tool_failed`, `:tool_denied`, and `:tool_rejected`.
+- Tool PubSub events use the current run topic and include `:tool_started`, `:tool_approval_requested`, `:tool_approval_resolved`, `:tool_approval_expired`, `:tool_completed`, `:tool_failed`, `:tool_denied`, and `:tool_rejected`.
 - `:apply_patch` accepts `%{path: path, patch: unified_diff}` or `%{changes: [%{path: path, before: before, after: after}]}`.
 - Patch validation must run before approval is requested and again immediately before applying.
 - `MrEric.Tools.PatchValidator` must reject workspace escapes, protected secret paths, symlink escapes, oversized patches, binary files or binary patches, missing update targets, stale `before` content, deletion patches, and disallowed create-file extensions.

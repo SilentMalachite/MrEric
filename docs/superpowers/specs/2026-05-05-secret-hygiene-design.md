@@ -1,7 +1,8 @@
 # Spec A — Emergency Secret Hygiene
 
 - **Date:** 2026-05-05
-- **Status:** Draft (awaiting user review)
+- **Status:** Implemented on `main` (2026-05-05)
+- **Plan:** `docs/superpowers/plans/2026-05-05-secret-hygiene.md`（履歴。再実行しない）
 - **Scope:** First of six security-hardening specs derived from the 2026-05-05 audit report.
 - **Tracks audit findings:** #2 (`secret_key_base` committed), #13 (`SecretChecker.sensitive_key?` inverted), #14 (RAG indexes `config/`), and the medium-severity `shell_command` env scrub deny-list.
 

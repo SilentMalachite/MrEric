@@ -1,7 +1,8 @@
 # Spec B — Run Ownership & Approval Lifecycle
 
 - **Date:** 2026-05-05
-- **Status:** Draft (awaiting user review)
+- **Status:** Implemented on `main` (2026-05-05, PR #3)
+- **Plan:** `docs/superpowers/plans/2026-05-05-run-ownership.md`（履歴。再実行しない）
 - **Scope:** Second of six security-hardening specs derived from the 2026-05-05 audit report.
 - **Tracks audit findings:** Run ownership model gap, HMAC TTL gap (medium-severity).
 - **Threat model:** Local single-user dev tool. Protect against accidental cross-tab/cross-browser hijack and stale approval replay. No multi-user authentication is in scope.

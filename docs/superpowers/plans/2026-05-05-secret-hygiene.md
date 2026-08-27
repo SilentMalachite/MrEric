@@ -1,5 +1,8 @@
 # Spec A — Emergency Secret Hygiene Implementation Plan
 
+> **Status:** Implemented on `main` (2026-05-05). Historical plan — do not re-execute.
+> Remaining follow-ups live in Specs C–F; see `docs/superpowers/README.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate four concrete secret-leakage paths identified in the 2026-05-05 audit: hardcoded `secret_key_base`, RAG indexing of `config/`, inverted `SecretChecker.sensitive_key?` logic with allow-list channels, and deny-list-only `shell_command` env scrubbing.

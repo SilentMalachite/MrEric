@@ -1,5 +1,8 @@
 # Spec B — Run Ownership & Approval Lifecycle Implementation Plan
 
+> **Status:** Implemented on `main` (2026-05-05, PR #3). Historical plan — do not re-execute.
+> Remaining follow-ups live in Specs C–F; see `docs/superpowers/README.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add session-bound `owner_id` to every Run mutation and a 30-minute hard TTL to every approval token, surfacing expiry as an event.

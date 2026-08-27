@@ -7,12 +7,23 @@ MrEric の主要な変更を記録します。
 
 ## [Unreleased]
 
-2026-05-04 時点の `main` には、初期の OpenAI LiveView UI から、
+2026-06-07 時点の `main` には、初期の OpenAI LiveView UI から、
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
-deterministic eval harness までの実装が含まれています。
+deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
+
+監査由来のセキュリティ hardening は Spec A（秘密情報衛生）と Spec B（Run 所有権）まで `main` に入っています。
+残りは Spec C–F です。進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
 
+- 起動時の local-first provider 判定を追加（2026-06-07）。
+  - `MrEric.LLM.ProviderResolver` が `[:lmstudio, :ollama, :openai]` を短い timeout でヘルスチェックし、最初に到達できた provider をキャッシュ。
+  - `AI_PROVIDER` または `:ai_provider` が明示されている場合は連鎖をスキップ。
+  - 終端の `:openai` は到達確認せず無条件フォールバック。test ではヘルスチェックを無効化し `:openai` に固定。
+- session-bound run ownership と承認 TTL を追加（Spec B、2026-05-05、PR #3）。
+  - `MrEric.Plugs.EnsureOwnerId` が browser session に `owner_id` を発行。
+  - `MrEric.Runs.start_run/3`、`cancel_run/2`、`approve_tool/3`、`deny_tool/3` は `owner_id` 必須。
+  - 承認トークンの HMAC に `owner_id` を含め、30 分 TTL と `:tool_approval_expired` イベントを追加。
 - OpenAI 互換 LLM 層を追加。
   - `MrEric.LLM.Provider`、`MrEric.LLM.OpenAICompat`、`MrEric.LLM.Router`、`MrEric.LLM.Registry` を導入。
   - OpenAI、Grok/xAI、OpenRouter、Ollama、LM Studio を provider として扱えるように変更。
@@ -21,7 +32,7 @@ deterministic eval harness までの実装が含まれています。
   - draft / review stage は `Task.async_stream/3` で並列実行。
   - 一部の draft / review が失敗しても、利用可能な結果があれば synthesis まで継続。
 - realtime Run 基盤を追加。
-  - `MrEric.Runs.start_run/2`、`MrEric.Runs.RunWorker`、`MrEric.Runs.RunSupervisor`、`MrEric.Runs.Events` を導入。
+  - `MrEric.Runs.start_run/2`（導入時。のちに `start_run/3`）、`MrEric.Runs.RunWorker`、`MrEric.Runs.RunSupervisor`、`MrEric.Runs.Events` を導入。
   - Run state、role 別 stage、cancel、completed run history、changed files を in-memory で管理。
   - PubSub topic `"runs:#{run_id}"` で sanitized run events を配信。
 - LiveView の Run UI を追加。
@@ -57,6 +68,9 @@ deterministic eval harness までの実装が含まれています。
 
 ### Changed
 
+- `MrEric.Runs` の破壊的 API を owner-bound に変更。`start_run/2` は `start_run/3`（`owner_id` 必須）になった。
+- `secret_key_base` の解決をすべての環境で `config/runtime.exs` に集約。dev/test は `SECRET_KEY_BASE` 未設定時に起動ごとの乱数へフォールバック。
+- `shell_command` の子プロセス環境変数を deny-list から allow-list に変更。
 - Phoenix LiveView UI を、単発の OpenAI response 表示から realtime Run orchestration UI へ再構成。
 - production runtime config を provider 別の必須環境変数チェックに更新。
 - model selection を OpenAI 固定から provider-specific model catalog に変更。
@@ -65,6 +79,10 @@ deterministic eval harness までの実装が含まれています。
 
 ### Security
 
+- コミット済みだった `secret_key_base` リテラルを除去し、`.env*` を gitignore 対象にした（Spec A）。
+- RAG indexer が `config/` と secret-bearing path を既定で除外するように変更。`Policy.secret_path?/1` を公開して再利用。
+- `SecretChecker` の sensitive-key 判定を修正し、キー名が敏感な値をスキャン対象外にしないようにした。
+- 承認 HMAC を `{tool, args, approval_id, tool_call_id, owner_id}` に束縛し、期限切れ承認を Replay できないようにした。
 - PubSub events、LiveView assigns/templates、Run trace、eval output、tool output、user-facing errors で secret redaction を適用。
 - workspace 外パス、protected secret paths、`.git`、`.ssh`、`.env*`、private key、credential / token / secret 系 path を tool policy で拒否。
 - symlink escape、binary patch、deletion patch、stale `before` content、oversized patch、許可されていない新規拡張子を patch validation で拒否。
@@ -110,5 +128,7 @@ deterministic eval harness までの実装が含まれています。
 
 ## Development Notes
 
-- 2026-05-04 の `main` には Phase 2 LLM orchestration、Phase 5A tool approval、Phase 5B RAG / MCP interface、Phase 5C tool loop、Phase 6 patch apply flow、Phase 9 eval harness までが含まれます。
+- 2026-06-07 の `main` には Phase 2 LLM orchestration、Phase 5A tool approval、Phase 5B RAG / MCP interface、Phase 5C tool loop、Phase 6 patch apply flow、Phase 9 eval harness、Spec A/B のセキュリティ hardening、local-first provider 判定までが含まれます。
+- 2026-08-27 に README、API リファレンス、AGENTS.md、監査 spec のステータスを現行コードへ同期した。
+- 2026-05-05 監査の残りは Spec C（tool 境界）、Spec D（Run 寿命 / 資源）、Spec E（eval / RAG 正しさ）、Spec F（本番 HTTP）です。
 - repository には現時点で release tag がないため、`Unreleased` は `mix.exs` version `0.1.0` 以降の main branch の状態を表します。

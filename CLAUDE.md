@@ -56,14 +56,15 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
 - PubSub topic is always `"runs:#{run_id}"`. Run statuses and roles are the closed lists in
   `lib/mr_eric/runs/run.ex`; event names live in `lib/mr_eric/runs/events.ex`.
 
-### Run ownership (recent "Spec B" work — note the API drift)
+### Run ownership (Spec B — implemented)
 - Every run is bound to an `owner_id`. `MrEric.Plugs.EnsureOwnerId` (wired into the
   `:browser` pipeline in `router.ex`) mints/reads a session-scoped `owner_id`.
-- `MrEric.Runs.start_run(task, owner_id, opts)` is **3-arity** and `owner_id` is required
-  (the README's `start_run/2` examples are out of date). `cancel_run`, `approve_tool`, and
-  `deny_tool` all require `owner_id`; `MrEric.Runs.OwnerCheck.verify/2` enforces it.
-- Design/plan for this lives in `docs/superpowers/specs/2026-05-05-run-ownership-design.md`
-  and `docs/superpowers/plans/2026-05-05-run-ownership.md`.
+- `MrEric.Runs.start_run(task, owner_id, opts)` is **3-arity** and `owner_id` is required.
+  `cancel_run/2`, `approve_tool/3`, and `deny_tool/3` also require `owner_id`.
+  `MrEric.Runs.OwnerCheck.verify/2` enforces it.
+- Design/plan (historical): `docs/superpowers/specs/2026-05-05-run-ownership-design.md`
+  and `docs/superpowers/plans/2026-05-05-run-ownership.md`. Remaining audit specs C–F
+  are tracked in `docs/superpowers/README.md`.
 
 ### Orchestrator tool loop — RunWorker is the only tool broker
 - `MrEric.Orchestrator.stream/3` lets only `:planner`, `:critic`, `:reviewer` request tools

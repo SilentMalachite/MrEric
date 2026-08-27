@@ -49,12 +49,18 @@ cd MrEric
 # 依存関係のインストール
 mix setup
 
-# 環境変数の設定
+# ローカル設定
+cp .env.example .env
+
+# クラウド provider を使う場合のみ（未設定なら起動時に LM Studio → Ollama → OpenAI の順で判定）
+export AI_PROVIDER=openai
 export OPENAI_API_KEY="your-api-key"
 
 # サーバーの起動
 mix phx.server
 ```
+
+詳細は [README](./README.md) のクイックスタートと AI プロバイダ節を参照してください。実装時の安全境界は [AGENTS.md](./AGENTS.md) が正です。
 
 ### 3. ブランチの作成
 
@@ -142,10 +148,11 @@ end
    end
    ```
 
-5. **Credo 警告に対処**
+5. **品質チェックは `mix precommit` に任せる**
    ```bash
-   mix credo --strict
+   mix precommit
    ```
+   このプロジェクトに Credo は入っていません。`precommit` は `compile --warning-as-errors`、`deps.unlock --unused`、`test` を実行します。
 
 ### Phoenix / LiveView ガイドライン
 
