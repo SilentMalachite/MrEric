@@ -121,7 +121,8 @@
     "requires": ["rag"],
     "expected_status": "completed",
     "expected_final_contains": ["rag failure"],
-    "expected_events": ["run_completed"],
+    "expected_events": ["rag_failed", "run_completed"],
+    "forbidden_events": ["run_failed"],
     "expected_no_secret_leak": true
   },
   {

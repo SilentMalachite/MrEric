@@ -46,7 +46,8 @@ defmodule MrEric.Evals.Case do
     "tool_completed" => :tool_completed,
     "tool_failed" => :tool_failed,
     "tool_denied" => :tool_denied,
-    "tool_rejected" => :tool_rejected
+    "tool_rejected" => :tool_rejected,
+    "rag_failed" => :rag_failed
   }
 
   @approval_actions %{
