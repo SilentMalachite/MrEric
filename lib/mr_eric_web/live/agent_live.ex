@@ -5,6 +5,7 @@ defmodule MrEricWeb.AgentLive do
   alias MrEric.LLM.Registry
   alias MrEric.Runs
   alias MrEric.Runs.Events
+  alias MrEric.Runs.Limits
   alias MrEric.Runs.Run
   alias MrEricWeb.Layouts
 
@@ -37,7 +38,7 @@ defmodule MrEricWeb.AgentLive do
        tool_events: [],
        form: to_form(%{"task" => ""})
      )
-     |> stream(:history, Agent.history())}
+     |> stream(:history, Agent.history(), at: 0, limit: Limits.fetch!(:max_history_entries))}
   end
 
   @impl true
@@ -612,7 +613,10 @@ defmodule MrEricWeb.AgentLive do
   defp current_run_event?(_run, _payload), do: false
 
   defp maybe_insert_history(socket, :run_completed, run) do
-    stream_insert(socket, :history, Run.to_history_entry(run), at: 0)
+    stream_insert(socket, :history, Run.to_history_entry(run),
+      at: 0,
+      limit: Limits.fetch!(:max_history_entries)
+    )
   end
 
   defp maybe_insert_history(socket, _event, _run), do: socket

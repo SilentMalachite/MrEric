@@ -360,6 +360,27 @@ defmodule MrEricWeb.AgentLiveTest do
     assert render(view) =~ "MrEric AI Agent"
   end
 
+  test "the history panel keeps at most max_history_entries cards", %{conn: conn} do
+    limit = MrEric.Runs.Limits.fetch!(:max_history_entries)
+
+    for n <- 1..(limit + 5) do
+      entry =
+        "history task #{n}"
+        |> MrEric.Runs.Run.new(owner_id: "history-owner", id: "h#{n}")
+        |> MrEric.Runs.Run.to_history_entry()
+
+      {:ok, _entry} = MrEric.Agent.record(entry)
+    end
+
+    {:ok, _view, html} = live(conn, "/")
+
+    # Stream dom ids are "history-<entry.id>", so "history-h<n>" matches a card
+    # and nothing else — not "history-empty", not "history-changed-files-…".
+    card_count = length(Regex.scan(~r/id="history-h\d+"/, html))
+
+    assert card_count <= limit
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
