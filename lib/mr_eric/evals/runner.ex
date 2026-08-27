@@ -46,6 +46,18 @@ defmodule MrEric.Evals.Runner do
           fail_role: role_value(eval_case.fail_role),
           workspace_root: workspace,
           skip_history: true,
+          # Spec D: evals read the run immediately after `run_completed`, so
+          # the worker can go straight away. `mix mr_eric.evals` runs in :dev,
+          # where the default grace is a minute — long enough for a batch of
+          # cases to exhaust the run pool (all 14 golden cases share the
+          # single default RunSupervisor and its 8-slot cap). 100ms is short
+          # enough that earlier cases' workers reap well before later cases
+          # need their slot (measured: the full batch runs in ~700ms, so a
+          # worker is long gone after its 100ms grace) while still leaving a
+          # wide margin over the near-instant `Runs.get_run/1` read this
+          # function does right after `collect_events/4` sees the terminal
+          # event.
+          terminal_run_ttl_ms: 100,
           max_concurrency: 1,
           max_total_runtime_ms: 1_500,
           max_tool_calls_per_run: 4,

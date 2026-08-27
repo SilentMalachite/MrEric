@@ -8,6 +8,7 @@ defmodule MrEric.Runs.RunWorker do
   alias MrEric.Agent
   alias MrEric.Orchestrator
   alias MrEric.Runs.Events
+  alias MrEric.Runs.Limits
   alias MrEric.Runs.OwnerCheck
   alias MrEric.Runs.Run
   alias MrEric.Tools.Executor
@@ -120,6 +121,7 @@ defmodule MrEric.Runs.RunWorker do
       task: nil,
       cancelled?: false,
       history_recorded?: false,
+      reap_scheduled?: false,
       pending_tool_approvals: %{}
     }
 
@@ -150,7 +152,7 @@ defmodule MrEric.Runs.RunWorker do
         orchestrator.stream(run.task, worker, stream_opts)
       end)
 
-    {:noreply, %{state | run: run, task: task}}
+    {:noreply, state |> put_run(run) |> Map.put(:task, task)}
   end
 
   @impl true
@@ -178,7 +180,7 @@ defmodule MrEric.Runs.RunWorker do
 
             state =
               state
-              |> Map.put(:run, run)
+              |> put_run(run)
               |> Map.put(:task, nil)
               |> Map.put(:cancelled?, true)
               |> maybe_resolve_pending_tool_approvals(:run_cancelled)
@@ -283,7 +285,7 @@ defmodule MrEric.Runs.RunWorker do
 
       state =
         state
-        |> Map.put(:run, run)
+        |> put_run(run)
         |> maybe_resolve_pending_tool_approvals(event)
 
       state =
@@ -331,6 +333,19 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
+  def handle_info(:reap, state) do
+    if Run.terminal?(state.run) do
+      # The task is normally already finished; shutting it down defensively
+      # keeps a stray orchestrator Task from outliving its worker, since a
+      # :normal exit does not take linked processes with it.
+      shutdown_task(state.task)
+      {:stop, :normal, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({ref, _result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | task: nil}}
@@ -352,7 +367,7 @@ defmodule MrEric.Runs.RunWorker do
 
           state =
             state
-            |> Map.put(:run, run)
+            |> put_run(run)
             |> Map.put(:task, nil)
             |> maybe_resolve_pending_tool_approvals(:run_failed)
 
@@ -405,6 +420,30 @@ defmodule MrEric.Runs.RunWorker do
 
   defp shutdown_task(nil), do: :ok
   defp shutdown_task(task), do: Task.shutdown(task, :brutal_kill)
+
+  # Every write of state.run goes through here, so "terminal implies a
+  # scheduled stop" holds by construction rather than by remembering to call
+  # the scheduler at each of the four terminal sites.
+  defp put_run(state, %Run{} = run) do
+    state
+    |> Map.put(:run, run)
+    |> maybe_schedule_reap()
+  end
+
+  defp maybe_schedule_reap(%{reap_scheduled?: true} = state), do: state
+
+  defp maybe_schedule_reap(state) do
+    if Run.terminal?(state.run) do
+      Process.send_after(self(), :reap, reap_ttl(state))
+      %{state | reap_scheduled?: true}
+    else
+      state
+    end
+  end
+
+  defp reap_ttl(state) do
+    Keyword.get(state.opts, :terminal_run_ttl_ms, Limits.fetch!(:terminal_run_ttl_ms))
+  end
 
   defp maybe_resolve_pending_tool_approvals(state, event)
        when event in [:run_completed, :run_failed, :run_cancelled] do
@@ -566,7 +605,7 @@ defmodule MrEric.Runs.RunWorker do
     {event, payload} = Events.normalize_event(state.run.id, {event, payload})
     run = Run.apply_event(state.run, {event, payload})
     Events.broadcast(run.id, {event, payload})
-    %{state | run: run}
+    put_run(state, run)
   end
 
   defp tool_event_payload(request) do
