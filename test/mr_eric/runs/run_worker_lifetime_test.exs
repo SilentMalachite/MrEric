@@ -212,4 +212,67 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
                opts ++ [id: "run-deadline-slot-#{System.unique_integer([:positive])}"]
              )
   end
+
+  test "the deadline still fires when the worker is constructed with auto_start: false" do
+    run_id = "run-deadline-noauto-#{System.unique_integer([:positive])}"
+    run = Run.new("stuck", owner_id: "lifetime-owner", id: run_id)
+
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [
+          max_total_runtime_ms: 20,
+          hard_deadline_grace_ms: 10,
+          terminal_run_ttl_ms: 5_000,
+          skip_history: true
+        ],
+        auto_start: false,
+        name: nil
+      )
+
+    refute Run.terminal?(elem(RunWorker.get_run(pid), 1))
+
+    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, 1_000
+    assert message =~ "maximum lifetime"
+
+    assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+  end
+
+  test "a hard-deadline failure suppresses a late run_completed from the killed task and never writes history" do
+    agent_name = :"history_agent_deadline_#{System.unique_integer([:positive])}"
+    start_supervised!({MrEric.Agent, name: agent_name})
+
+    run_id = "run-deadline-late-#{System.unique_integer([:positive])}"
+    run = Run.new("stuck", owner_id: "lifetime-owner", id: run_id)
+
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [
+          orchestrator_module: IdleOrchestrator,
+          max_total_runtime_ms: 20,
+          hard_deadline_grace_ms: 10,
+          terminal_run_ttl_ms: 5_000,
+          agent_server: agent_name
+        ],
+        auto_start: true,
+        name: nil
+      )
+
+    assert_receive {:run_failed, %{run_id: ^run_id, error: _message}}, 1_000
+
+    # Simulate the doomed orchestrator task's :run_completed landing in the
+    # worker's mailbox just after :hard_deadline was already processed and
+    # killed it — the exact race the :cancelled? flag exists to close off.
+    send(pid, {:run_completed, %{final: "too-late"}})
+
+    refute_receive {:run_completed, %{run_id: ^run_id}}, 300
+
+    assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+    assert [] = MrEric.Agent.history(agent_name)
+  end
 end

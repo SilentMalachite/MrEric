@@ -364,6 +364,7 @@ defmodule MrEric.Runs.RunWorker do
         state
         |> put_run(run)
         |> Map.put(:task, nil)
+        |> Map.put(:cancelled?, true)
         |> maybe_resolve_pending_tool_approvals(:run_failed)
 
       Events.broadcast(run.id, {event, payload})
