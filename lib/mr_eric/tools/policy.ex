@@ -13,6 +13,10 @@ defmodule MrEric.Tools.Policy do
   @allowed_shell_commands ~w(pwd ls cat sed grep rg git)
   @allowed_git_subcommands ~w(status diff log show)
 
+  # Matched case-insensitively: macOS filesystems are case-insensitive by
+  # default, so `.GIT/config` reaches the same bytes as `.git/config`.
+  @protected_dir_segments ~w(.git .ssh)
+
   @forbidden_shell_syntax [
     ~r/[;&|$`\\'"(){}\[\]*?<>~!]/,
     ~r/\n/
@@ -247,13 +251,16 @@ defmodule MrEric.Tools.Policy do
   Returns true when the given workspace-relative path is considered secret-bearing.
   Used by `resolve_workspace_path/2` to gate tool access and by `MrEric.RAG.Index`
   to exclude such files from the lexical index. Single source of truth.
+
+  Directory-segment matching (`.git`, `.ssh`) is case-insensitive because macOS
+  filesystems are case-insensitive by default.
   """
   @spec secret_path?(Path.t()) :: boolean()
   def secret_path?(relative) do
     segments = Path.split(relative)
     basename = Path.basename(relative)
 
-    Enum.any?(segments, &(&1 in [".git", ".ssh"])) or
+    Enum.any?(segments, &(String.downcase(&1) in @protected_dir_segments)) or
       String.starts_with?(String.downcase(basename), ".env") or
       Regex.match?(~r/^id_(rsa|dsa|ecdsa|ed25519)$/i, basename) or
       Regex.match?(~r/\.(pem|key|p12|pfx)$/i, basename) or

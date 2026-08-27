@@ -41,6 +41,23 @@ defmodule MrEric.Tools.PolicyTest do
              Policy.resolve_workspace_path(".ssh/id_ed25519", workspace_root: workspace)
   end
 
+  test "case-folded secret dirs are rejected by path resolution", %{workspace: workspace} do
+    assert {:error, :secret_file} =
+             Policy.resolve_workspace_path(".GIT/config", workspace_root: workspace)
+
+    assert {:error, :secret_file} =
+             Policy.resolve_workspace_path(".SSH/id_ed25519", workspace_root: workspace)
+  end
+
+  test "case-folded secret dirs are rejected as shell command arguments", %{
+    workspace: workspace
+  } do
+    assert {:error, :secret_file} =
+             Policy.authorize(:shell_command, %{command: "cat .GIT/config"},
+               workspace_root: workspace
+             )
+  end
+
   test "shell commands always require approval", %{workspace: workspace} do
     assert {:ok, %{approval_required?: true}} =
              Policy.authorize(:shell_command, %{command: "pwd"}, workspace_root: workspace)
@@ -162,6 +179,25 @@ defmodule MrEric.Tools.PolicyTest do
 
     test "true for paths under .git/" do
       assert MrEric.Tools.Policy.secret_path?(".git/config")
+    end
+
+    test "true for .git regardless of segment case" do
+      assert MrEric.Tools.Policy.secret_path?(".git/config")
+      assert MrEric.Tools.Policy.secret_path?(".GIT/config")
+      assert MrEric.Tools.Policy.secret_path?(".Git/config")
+      assert MrEric.Tools.Policy.secret_path?("nested/.GIT/config")
+    end
+
+    test "true for .ssh regardless of segment case" do
+      assert MrEric.Tools.Policy.secret_path?(".ssh/id_ed25519")
+      assert MrEric.Tools.Policy.secret_path?(".SSH/known_hosts")
+      assert MrEric.Tools.Policy.secret_path?(".Ssh/config")
+    end
+
+    test "false for paths that merely contain the letters" do
+      refute MrEric.Tools.Policy.secret_path?("lib/legit/thing.ex")
+      refute MrEric.Tools.Policy.secret_path?("docs/gitignore-notes.md")
+      refute MrEric.Tools.Policy.secret_path?("lib/mr_eric/ssh_helper.ex")
     end
 
     test "true for *.pem" do
