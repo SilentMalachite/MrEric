@@ -111,7 +111,7 @@ defmodule MrEric.Orchestrator do
   end
 
   defp run_planner(task, opts) do
-    rag_context = rag_context_for(task, opts)
+    rag_context = rag_context_for(task, nil, opts)
 
     :planner
     |> Registry.agents(opts)
@@ -202,7 +202,7 @@ defmodule MrEric.Orchestrator do
   end
 
   defp stream_planner(task, pid, opts, tool_budget) do
-    rag_context = rag_context_for(task, opts)
+    rag_context = rag_context_for(task, pid, opts)
 
     :planner
     |> Registry.agents(opts)
@@ -774,7 +774,7 @@ defmodule MrEric.Orchestrator do
     end
   end
 
-  defp rag_context_for(task, opts) do
+  defp rag_context_for(task, pid, opts) do
     cond do
       Keyword.get(opts, :rag_enabled, Keyword.get(opts, :rag_enabled?, true)) == false ->
         ""
@@ -783,11 +783,16 @@ defmodule MrEric.Orchestrator do
         Keyword.get(opts, :rag_context) |> String.trim() |> limit_text(max_context_chars(opts))
 
       true ->
-        do_rag_context_for(task, opts)
+        do_rag_context_for(task, pid, opts)
     end
   end
 
-  defp do_rag_context_for(task, opts) do
+  # A RAG failure must never fail a run: the planner proceeds with empty
+  # context, exactly as before. What changes is that it no longer happens in
+  # silence -- "RAG raised" and "RAG found nothing" used to be the same
+  # observation, which is why the golden case for the first could pass on the
+  # second.
+  defp do_rag_context_for(task, pid, opts) do
     rag_module = Keyword.get(opts, :rag_module, RAG)
 
     case rag_module.context_for(task, opts) do
@@ -798,12 +803,31 @@ defmodule MrEric.Orchestrator do
         context |> String.trim() |> limit_text(max_context_chars(opts))
 
       _other ->
+        emit_rag_failed(pid, opts)
         ""
     end
   rescue
-    _error -> ""
+    _error ->
+      emit_rag_failed(pid, opts)
+      ""
   catch
-    _kind, _reason -> ""
+    _kind, _reason ->
+      emit_rag_failed(pid, opts)
+      ""
+  end
+
+  defp emit_rag_failed(nil, _opts), do: :ok
+
+  defp emit_rag_failed(pid, opts) when is_pid(pid) do
+    # `:error` carries the classification-bearing sentinel, never the raw
+    # reason. Two things depend on that. The reason can hold a provider secret
+    # or a filesystem path, and `send_event/4` does not sanitize -- only
+    # `RunWorker.apply_run_event/3` does, through `Events.normalize_event/2`.
+    # And normalization classifies whatever is in `:error`: on an arbitrary
+    # string `Errors.classify/1` is keyword-matching against English and
+    # answers `:unknown`, which is exactly the failure CLAUDE.md records for
+    # `:run_lifetime_exceeded`. The kind of failure is known here a priori.
+    send_event(pid, :rag_failed, %{error: :rag_failed, stage: :planner}, opts)
   end
 
   defp draft_prompt(task, plan) do

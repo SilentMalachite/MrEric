@@ -479,4 +479,63 @@ defmodule MrEric.OrchestratorTest do
     assert entry.code == entry.final
     assert entry.plan == "plan from planner-model"
   end
+
+  defmodule RaisingRAGForTest do
+    @moduledoc false
+    def context_for(_task, _opts), do: raise("rag exploded with sk-secretvalue123456789")
+  end
+
+  defmodule EmptyRAGForTest do
+    @moduledoc false
+    def context_for(_task, _opts), do: {:ok, ""}
+  end
+
+  test "stream/3 emits :rag_failed and still completes the run" do
+    opts = [
+      provider_module: MrEric.LLM.FakeProvider,
+      provider: :fake,
+      model: "fake-model",
+      scenario: "simple_planning",
+      rag_module: RaisingRAGForTest,
+      run_id: "rag-fail-1"
+    ]
+
+    Orchestrator.stream("summarize the project", self(), opts)
+
+    assert_received {:rag_failed, payload}
+    assert payload.run_id == "rag-fail-1"
+
+    # Nothing raw leaves the orchestrator: the raising module's message carries
+    # a secret, and the payload must not.
+    refute inspect(payload) =~ "sk-secretvalue"
+
+    # `send_event/4` does not normalize -- `RunWorker.apply_run_event/3` does.
+    # Pin the end-to-end contract here: what the orchestrator puts in `:error`
+    # has to be what makes `normalize_event/2` classify this as `:rag_failed`.
+    # A raw exception message would classify as `:unknown`, because
+    # `Errors.classify/1` on an arbitrary string is keyword-matching against
+    # English -- the failure mode CLAUDE.md records for :run_lifetime_exceeded.
+    assert {:rag_failed, normalized} =
+             MrEric.Runs.Events.normalize_event("rag-fail-1", {:rag_failed, payload})
+
+    assert normalized.error_class == :rag_failed
+    assert normalized.error == "Project context lookup failed."
+
+    refute_received {:run_failed, _}
+  end
+
+  test "a RAG module that legitimately returns empty context emits nothing" do
+    opts = [
+      provider_module: MrEric.LLM.FakeProvider,
+      provider: :fake,
+      model: "fake-model",
+      scenario: "simple_planning",
+      rag_module: EmptyRAGForTest,
+      run_id: "rag-empty-1"
+    ]
+
+    Orchestrator.stream("summarize the project", self(), opts)
+
+    refute_received {:rag_failed, _}
+  end
 end
