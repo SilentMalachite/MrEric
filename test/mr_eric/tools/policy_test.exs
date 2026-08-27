@@ -168,6 +168,52 @@ defmodule MrEric.Tools.PolicyTest do
              )
   end
 
+  describe "option-attached paths (Spec C-1)" do
+    test "rejects a relative attached short-option path", %{workspace: workspace} do
+      assert {:error, :outside_workspace} =
+               Policy.authorize(:shell_command, %{command: "grep -f../outside/p needle.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "rejects an absolute attached short-option path", %{workspace: workspace} do
+      assert {:error, :outside_workspace} =
+               Policy.authorize(:shell_command, %{command: "grep -f/etc/passwd needle.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "rejects a long-option attached path", %{workspace: workspace} do
+      assert {:error, :outside_workspace} =
+               Policy.authorize(
+                 :shell_command,
+                 %{command: "grep --file=../outside/p needle.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "rejects a secret path carried in an option value", %{workspace: workspace} do
+      assert {:error, :secret_file} =
+               Policy.authorize(:shell_command, %{command: "grep --file=.env needle.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "still allows a non-path option value", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "ls --color=auto"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "still allows ordinary separated arguments", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "grep -rn needle lib"},
+                 workspace_root: workspace
+               )
+    end
+  end
+
   describe "command_argv/1 (Spec C)" do
     test "splits a command into an argv vector" do
       assert {:ok, ["grep", "-rn", "needle", "lib"]} =

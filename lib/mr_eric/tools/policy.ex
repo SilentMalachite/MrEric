@@ -356,6 +356,39 @@ defmodule MrEric.Tools.Policy do
   end
 
   defp validate_command_token_path(token, opts) do
+    case option_value_paths(token) do
+      [] ->
+        validate_plain_token_path(token, opts)
+
+      values ->
+        Enum.reduce_while(values, :ok, fn value, :ok ->
+          case validate_plain_token_path(value, opts) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+    end
+  end
+
+  # A path can hide inside an option token: `-fPATTERNS`, `--file=PATTERNS`.
+  # The token as a whole expands to a harmless in-workspace string
+  # (`<workspace>/--file=..`), so it must be taken apart before
+  # `validate_plain_token_path/2` sees it. Clause order matters: the `--`
+  # clause must shadow the single-letter one.
+  defp option_value_paths("--" <> rest) do
+    case String.split(rest, "=", parts: 2) do
+      [_name, value] when value != "" -> [value]
+      _no_value -> []
+    end
+  end
+
+  defp option_value_paths(<<?-, letter, value::binary>>) when value != "" do
+    if letter in ?a..?z or letter in ?A..?Z, do: [value], else: []
+  end
+
+  defp option_value_paths(_token), do: []
+
+  defp validate_plain_token_path(token, opts) do
     cond do
       String.contains?(token, "://") ->
         :ok
