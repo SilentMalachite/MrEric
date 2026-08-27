@@ -89,4 +89,74 @@ defmodule MrEric.Tools.ShellCommandTest do
     assert {:ok, %{output: "hi\n"}} =
              ShellCommand.run(%{"command" => "cat note.txt"}, workspace_root: workspace)
   end
+
+  describe "argument grammar boundary (Spec C-1)" do
+    test "sed cannot write in place, whatever the option order", %{workspace: workspace} do
+      target = Path.join(workspace, "README.md")
+      File.write!(target, "foo\n")
+
+      assert {:error, :dangerous_command} =
+               ShellCommand.run(%{command: "sed -E -i.bak s/foo/bar/ README.md"},
+                 workspace_root: workspace
+               )
+
+      assert File.read!(target) == "foo\n"
+      refute File.exists?(Path.join(workspace, "README.md.bak"))
+    end
+
+    test "grep cannot read a file outside the workspace via an attached -f", %{
+      workspace: workspace
+    } do
+      outside =
+        Path.join(System.tmp_dir!(), "mr-eric-outside-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(outside)
+      on_exit(fn -> File.rm_rf!(outside) end)
+      File.write!(Path.join(outside, "patterns"), "SECRET\n")
+      File.write!(Path.join(workspace, "needle.txt"), "SECRET-value-here\n")
+
+      assert {:error, :outside_workspace} =
+               ShellCommand.run(
+                 %{command: "grep -f#{Path.join(outside, "patterns")} needle.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "git cannot be re-pointed at a repository outside the workspace", %{
+      workspace: workspace
+    } do
+      outside =
+        Path.join(System.tmp_dir!(), "mr-eric-outside-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(outside)
+      on_exit(fn -> File.rm_rf!(outside) end)
+      File.write!(Path.join(outside, "SECRET.txt"), "top-secret\n")
+      System.cmd("git", ["init", "-q"], cd: outside, stderr_to_stdout: true)
+
+      assert {:error, :dangerous_command} =
+               ShellCommand.run(
+                 %{
+                   command:
+                     "git --git-dir=#{Path.join(outside, ".git")} " <>
+                       "--work-tree=#{outside} status --short"
+                 },
+                 workspace_root: workspace
+               )
+    end
+
+    test "git cannot be re-pointed via a relative --git-dir", %{workspace: workspace} do
+      # `workspace` and `store` are siblings so `../store` is expressible.
+      store = Path.join(Path.dirname(workspace), "store-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(store)
+      on_exit(fn -> File.rm_rf!(store) end)
+      System.cmd("git", ["init", "-q", "--bare", store], stderr_to_stdout: true)
+
+      rel = Path.join("..", Path.basename(store))
+
+      assert {:error, :dangerous_command} =
+               ShellCommand.run(%{command: "git --git-dir=#{rel} status --short"},
+                 workspace_root: workspace
+               )
+    end
+  end
 end

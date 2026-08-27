@@ -112,7 +112,7 @@ Append to `test/mr_eric/tools/shell_command_test.exs`, inside the existing modul
   end
 ```
 
-Note the third case uses absolute paths for readability. `--git-dir=<absolute>` is *already* rejected today by `embedded_absolute_path/1`, so this case would pass for the wrong reason. Task 4 replaces it with the `../`-relative form once the workspace and the outside dir are siblings; for now, add the relative variant too:
+Note the third case uses absolute paths for readability. `--git-dir=<absolute>` is *already* rejected today by `embedded_absolute_path/1` — but as `{:error, :outside_workspace}`, i.e. for a path reason rather than an option reason. Asserting `:dangerous_command` is therefore correct as an end-state assertion and this case goes green in Task 4, when `ensure_program_options_allowed/1` starts running ahead of the path check. Add the `../`-relative variant too, since that one is not blocked at all today:
 
 ```elixir
     test "git cannot be re-pointed via a relative --git-dir", %{workspace: workspace} do
@@ -138,9 +138,12 @@ Run: `mix test test/mr_eric/tools/shell_command_test.exs`
 Expected: the `sed`, `grep`, and relative-`--git-dir` cases FAIL. Read each failure and confirm the `right:` side is `{:ok, ...}` — that is the bypass firing. In particular:
 
 - the `sed` case must fail on the `{:error, :dangerous_command}` match, and if you let it run past that, `File.read!(target)` would be `"bar\n"`;
-- the absolute-`--git-dir` case is expected to **pass already**; that is correct and it stays as a regression guard.
+- the `grep -f` and relative-`--git-dir` cases must fail with `right: {:ok, ...}` — that is the bypass firing;
+- the absolute-`--git-dir` case fails with `right: {:error, :outside_workspace}`. That is **not** a bypass: the path check already blocks it. It goes green in Task 4 when the option check starts running first, and until then it pins the current reason.
 
-If a case fails with a different error, stop — the reproduction is wrong and the rest of the plan is built on it.
+Measured on `main` at `38a309e`: `sed` → `{:ok, exit_status: 0}` **and the file is rewritten**; `grep -f<abs>` → `{:ok, exit_status: 0}` with outside content matched; relative `--git-dir` → `{:ok, exit_status: 128}` (git found the repo, then refused for want of a work tree — the boundary was already crossed).
+
+If a case fails for a reason not listed above, stop — the reproduction is wrong and the rest of the plan is built on it.
 
 - [ ] **Step 3: Commit the red tests**
 
