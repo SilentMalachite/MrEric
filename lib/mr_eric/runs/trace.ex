@@ -22,17 +22,19 @@ defmodule MrEric.Runs.Trace do
     entries: []
   ]
 
+  @truncation_marker " … [truncated]"
+
   def new(run_id, task, provider, model, metadata \\ %{}) do
     now = DateTime.utc_now()
 
     %__MODULE__{
       run_id: run_id,
-      task: Errors.redact(task),
+      task: task |> Errors.redact() |> bound_value(),
       provider: provider,
       model: model,
       started_at: now,
       status: :queued,
-      metadata: Errors.redact(metadata)
+      metadata: metadata |> Errors.redact() |> bound_value()
     }
   end
 
@@ -43,7 +45,7 @@ defmodule MrEric.Runs.Trace do
   # `events/1` and in golden `expected_events`, drop the duplicated body, and
   # count the rest.
   def record(%__MODULE__{} = trace, :stage_chunk, payload) do
-    payload = Errors.redact(payload)
+    payload = payload |> Errors.redact() |> bound_value()
     role = Map.get(payload, :role)
 
     if Map.has_key?(trace.chunk_counts, role) do
@@ -62,9 +64,22 @@ defmodule MrEric.Runs.Trace do
     end
   end
 
+  # `stage_completed` carries the role's whole finished text, and
+  # `Run.stages[role].content` is where that text is kept -- the trace copy is
+  # a duplicate, and the largest single thing that reaches a trace. Same
+  # reasoning as `stage_chunk` above, and the entry still appears in
+  # `events/1` and in golden `expected_events`.
+  def record(%__MODULE__{} = trace, :stage_completed, payload) do
+    record_entry(trace, :stage_completed, Map.delete(payload, :content))
+  end
+
   def record(%__MODULE__{} = trace, event, payload) do
+    record_entry(trace, event, payload)
+  end
+
+  defp record_entry(trace, event, payload) do
     now = DateTime.utc_now()
-    payload = Errors.redact(payload)
+    payload = payload |> Errors.redact() |> bound_value()
 
     entry = %{
       event: event,
@@ -158,6 +173,36 @@ defmodule MrEric.Runs.Trace do
   end
 
   defp error_classification(_event, _payload), do: nil
+
+  # The entry cap counts entries; this is what turns that count into a memory
+  # bound. Truncation runs *after* `Errors.redact/1` on purpose -- cutting a
+  # secret in half first would leave a fragment the redactor no longer matches.
+  # Only strings shrink: `changed_files`, `applied?` and the other small values
+  # `summary/1` is built from are left exactly as they are.
+  defp bound_value(value) when is_binary(value) do
+    bound_binary(value, Limits.fetch!(:max_trace_payload_chars))
+  end
+
+  defp bound_value(%_struct{} = value), do: value
+
+  defp bound_value(value) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {k, bound_value(v)} end)
+
+  defp bound_value(value) when is_list(value), do: Enum.map(value, &bound_value/1)
+  defp bound_value(value), do: value
+
+  defp bound_binary(value, max) do
+    if String.valid?(value) do
+      # Grapheme-counted, so a truncated string never ends mid-codepoint.
+      if String.length(value) > max,
+        do: String.slice(value, 0, max) <> @truncation_marker,
+        else: value
+    else
+      if byte_size(value) > max,
+        do: binary_part(value, 0, max) <> @truncation_marker,
+        else: value
+    end
+  end
 
   # `entries ++ [entry]` is O(n), but the cap keeps n at or below
   # `max_trace_entries`, which makes the whole run's cost irrelevant. Keeping

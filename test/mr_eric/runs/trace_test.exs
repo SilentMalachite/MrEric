@@ -123,4 +123,75 @@ defmodule MrEric.Runs.TraceTest do
     assert summary.dropped_entries == 0
     refute summary.truncated?
   end
+
+  # An entry cap is a count, not a memory bound. The bodies that reach a trace
+  # are model output and tool output, and neither has a size the trace itself
+  # controls -- so a 500-entry cap still admits an unbounded number of bytes.
+  describe "payload size" do
+    @big String.duplicate("x", 50_000)
+
+    test "never keeps the completed stage text, which already lives in the stage" do
+      trace =
+        Trace.new("run-stage-body", "task", :ollama, "m")
+        |> Trace.record(:stage_completed, %{role: :planner, content: @big})
+
+      [entry] = trace.entries
+      assert entry.event == :stage_completed
+      assert entry.payload.role == :planner
+      refute Map.has_key?(entry.payload, :content)
+    end
+
+    test "truncates an oversized tool output rather than storing it whole" do
+      max = MrEric.Runs.Limits.fetch!(:max_trace_payload_chars)
+
+      trace =
+        Trace.new("run-tool-body", "task", :ollama, "m")
+        |> Trace.record(:tool_completed, %{
+          tool: :shell_command,
+          tool_call_id: "call-1",
+          result: %{output: @big, exit_status: 0}
+        })
+
+      [entry] = trace.entries
+      output = entry.payload.result.output
+
+      assert String.length(output) <= max + 32
+      assert String.starts_with?(output, "xxxx")
+      assert output =~ "truncated"
+      assert entry.payload.result.exit_status == 0
+    end
+
+    test "keeps the small values a summary is built from intact" do
+      trace =
+        Trace.new("run-summary-intact", "task", :ollama, "m")
+        |> Trace.record(:tool_completed, %{
+          tool: :apply_patch,
+          tool_call_id: "call-1",
+          result: %{applied?: true, changed_files: ["note.txt"], output: @big}
+        })
+
+      summary = Trace.summary(trace)
+
+      assert summary.patch_applied? == true
+      assert summary.changed_files == ["note.txt"]
+    end
+
+    test "bounds the whole trace even when every entry carries an oversized body" do
+      max_entries = MrEric.Runs.Limits.fetch!(:max_trace_entries)
+
+      trace =
+        Enum.reduce(1..(max_entries * 2), Trace.new("run-total", "task", :ollama, "m"), fn i,
+                                                                                           acc ->
+          Trace.record(acc, :tool_completed, %{
+            tool: :shell_command,
+            tool_call_id: "call-#{i}",
+            result: %{output: @big}
+          })
+        end)
+
+      # Each of the 50_000-char bodies alone would be ~50 KB; 500 of them is
+      # ~25 MB. The bound has to hold on the stored trace, not on one entry.
+      assert :erlang.external_size(trace) < 5_000_000
+    end
+  end
 end
