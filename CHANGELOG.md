@@ -11,8 +11,7 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は、Spec A–C が `main` に入っています。Spec D は
-`spec-d-run-lifetime` で実装済みで `main` 未マージ、残りは Spec E–F です。
+監査由来のセキュリティ hardening は、Spec A–D が `main` に入っており、残りは Spec E–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
@@ -100,7 +99,14 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 - production runtime config を provider 別の必須環境変数チェックに更新。
 - model selection を OpenAI 固定から provider-specific model catalog に変更。
 - README を現行 architecture、provider 設定、safe tool execution、RAG / MCP、deterministic evals に合わせて更新。
-- `mix precommit` は `compile --warning-as-errors`、`deps.unlock --unused`、`test` を実行する品質チェックとして整理。
+- `mix precommit` は `compile --warnings-as-errors`、`deps.unlock --unused`、`test` を実行する品質チェックとして整理。
+  - 当初は `--warning-as-errors`（単数）と書いており、Elixir に存在しないフラグだったため Mix が
+    無視していた。10 件の警告を抱えたまま PASS を報告し続けていたのを 2026-08-27 に修正。
+- `phoenix_live_view` を `~> 1.1.0` から `~> 1.2` に更新（2026-08-27）。
+  警告ゲートを有効化するための前提。10 件中 8 件が LiveView 1.1.17 の HEEx 生成コードが
+  Elixir 1.20 下で出す `vars_changed` 型警告で、自前コードでは解消できず、`~> 1.1.0` の
+  範囲では 1.1.17 が最新だったため。この更新で `<.button type="submit">` が
+  `button/1` の未宣言属性を渡していたことが判明（1.1 では黙って捨てられていた）。
 
 ### Security
 
@@ -209,6 +215,6 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 - 2026-06-07 の `main` には Phase 2 LLM orchestration、Phase 5A tool approval、Phase 5B RAG / MCP interface、Phase 5C tool loop、Phase 6 patch apply flow、Phase 9 eval harness、Spec A/B のセキュリティ hardening、local-first provider 判定までが含まれます。
 - 2026-08-27 に README、API リファレンス、AGENTS.md、監査 spec のステータスを現行コードへ同期した。
-- 2026-05-05 監査の残りは Spec E（eval / RAG 正しさ）と Spec F（本番 HTTP）です。Spec C は
-  `main` に入り、Spec D は `spec-d-run-lifetime` で実装済み（`main` 未マージ）。
+- 2026-05-05 監査の残りは Spec E（eval / RAG 正しさ）と Spec F（本番 HTTP）です。Spec C と
+  Spec D は `main` に入りました。
 - repository には現時点で release tag がないため、`Unreleased` は `mix.exs` version `0.1.0` 以降の main branch の状態を表します。
