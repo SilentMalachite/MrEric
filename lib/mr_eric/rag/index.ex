@@ -55,7 +55,50 @@ defmodule MrEric.RAG.Index do
     end
   end
 
+  @doc """
+  A cheap identity for what `build/1` would read, plus the paths it found.
+
+  The walk is `File.lstat` only -- the same lstat `discover_paths/2` already
+  performs -- so this costs no extra syscalls. Reading, chunking and
+  tokenizing the files is the expensive half, and it is what a matching
+  fingerprint lets the cache skip.
+
+  `size` is part of the entry as well as `mtime`: mtime granularity is one
+  second on some filesystems, and size catches most same-second edits. A
+  same-second, same-size edit can still slip through; the alternative is
+  hashing every file, which costs exactly what the cache exists to save.
+  """
+  def fingerprint(opts \\ []) do
+    workspace = Policy.workspace_root(opts)
+
+    if File.dir?(workspace) do
+      entries =
+        case Keyword.get(opts, :paths) || Keyword.get(opts, :rag_paths) do
+          nil -> discover_entries(workspace, opts)
+          paths -> Enum.map(paths, &stat_entry(workspace, to_string(&1)))
+        end
+
+      sorted = Enum.sort(entries)
+      {:ok, :erlang.phash2(sorted), Enum.map(sorted, fn {path, _mtime, _size} -> path end)}
+    else
+      {:error, :invalid_workspace}
+    end
+  end
+
+  defp stat_entry(workspace, relative_path) do
+    case File.lstat(Path.join(workspace, relative_path)) do
+      {:ok, %File.Stat{mtime: mtime, size: size}} -> {relative_path, mtime, size}
+      {:error, reason} -> {relative_path, reason, -1}
+    end
+  end
+
   defp discover_paths(workspace, opts) do
+    workspace
+    |> discover_entries(opts)
+    |> Enum.map(fn {path, _mtime, _size} -> path end)
+  end
+
+  defp discover_entries(workspace, opts) do
     extensions = Keyword.get(opts, :include_extensions, @default_extensions)
     allow_secret = Keyword.get(opts, :allow_secret_paths, false)
 
@@ -98,13 +141,13 @@ defmodule MrEric.RAG.Index do
                                ignored_files, ignored_extensions, allow_secret, acc)
               end
 
-            {:ok, %File.Stat{type: :regular}} ->
+            {:ok, %File.Stat{type: :regular, mtime: mtime, size: size}} ->
               cond do
                 not indexed_extension?(relative_path, extensions) -> acc
                 MapSet.member?(ignored_extensions, Path.extname(relative_path)) -> acc
                 Enum.any?(ignored_files, &Regex.match?(&1, Path.basename(relative_path))) -> acc
                 not allow_secret and MrEric.Tools.Policy.secret_path?(relative_path) -> acc
-                true -> [relative_path | acc]
+                true -> [{relative_path, mtime, size} | acc]
               end
 
             _other ->

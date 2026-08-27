@@ -121,4 +121,57 @@ defmodule MrEric.RAG.IndexTest do
     # Confirm the same path is rejected by Policy directly.
     assert MrEric.Tools.Policy.secret_path?(".env.foo")
   end
+
+  test "fingerprint/1 is stable across calls on an unchanged tree", %{workspace: workspace} do
+    assert {:ok, first, paths} = Index.fingerprint(workspace_root: workspace)
+    assert {:ok, ^first, ^paths} = Index.fingerprint(workspace_root: workspace)
+    assert "README.md" in paths
+  end
+
+  test "fingerprint/1 changes when an indexed file's content changes", %{workspace: workspace} do
+    assert {:ok, before, _paths} = Index.fingerprint(workspace_root: workspace)
+
+    File.write!(
+      Path.join(workspace, "README.md"),
+      "MrEric project notes about RAG search, now with more words\n"
+    )
+
+    assert {:ok, later, _paths} = Index.fingerprint(workspace_root: workspace)
+    refute before == later
+  end
+
+  test "fingerprint/1 changes when an eligible file appears", %{workspace: workspace} do
+    assert {:ok, before, _paths} = Index.fingerprint(workspace_root: workspace)
+
+    File.write!(Path.join(workspace, "NOTES.md"), "a brand new note about approvals\n")
+
+    assert {:ok, later, new_paths} = Index.fingerprint(workspace_root: workspace)
+    refute before == later
+    assert "NOTES.md" in new_paths
+  end
+
+  test "fingerprint/1 ignores files the index would not read", %{workspace: workspace} do
+    assert {:ok, before, _paths} = Index.fingerprint(workspace_root: workspace)
+
+    File.write!(Path.join(workspace, ".env"), "OPENAI_API_KEY=sk-changed-entirely")
+
+    assert {:ok, later, _paths} = Index.fingerprint(workspace_root: workspace)
+    assert before == later
+  end
+
+  test "fingerprint/1 honours an explicit path list", %{workspace: workspace} do
+    opts = [workspace_root: workspace, paths: ["README.md"]]
+
+    assert {:ok, before, ["README.md"]} = Index.fingerprint(opts)
+
+    File.write!(Path.join(workspace, "README.md"), "different content entirely\n")
+
+    assert {:ok, later, ["README.md"]} = Index.fingerprint(opts)
+    refute before == later
+  end
+
+  test "fingerprint/1 reports an invalid workspace like build/1 does" do
+    assert {:error, :invalid_workspace} =
+             Index.fingerprint(workspace_root: "/nonexistent/mr-eric-workspace")
+  end
 end
