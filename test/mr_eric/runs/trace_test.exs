@@ -87,10 +87,29 @@ defmodule MrEric.Runs.TraceTest do
 
     assert length(trace.entries) == max
     assert trace.dropped_entries == 25
+    # Drop-oldest, not drop-newest: the 25 oldest entries (agent-1..agent-25)
+    # are gone, so the first surviving entry is the 26th thing pushed.
+    assert List.first(trace.entries).payload.name == "agent-26"
 
     summary = Trace.summary(trace)
     assert summary.dropped_entries == 25
     assert summary.truncated?
+  end
+
+  test "pushing exactly the cap causes no drops" do
+    max = MrEric.Runs.Limits.fetch!(:max_trace_entries)
+
+    trace =
+      Enum.reduce(1..max, Trace.new("run-cap-exact", "task", :ollama, "m"), fn n, acc ->
+        Trace.record(acc, :stage_started, %{role: :planner, name: "agent-#{n}"})
+      end)
+
+    assert length(trace.entries) == max
+    assert trace.dropped_entries == 0
+
+    summary = Trace.summary(trace)
+    assert summary.dropped_entries == 0
+    refute summary.truncated?
   end
 
   test "an untruncated trace reports no drops" do
