@@ -1,7 +1,7 @@
 # Spec C-1 — Command Argument Grammar Hardening
 
 - **Date:** 2026-08-27
-- **Status:** Designed. Not yet implemented.
+- **Status:** Revision 2 — designed, not yet implemented. Revision 1's deny-list approach was implemented on `feat/spec-c1-arg-grammar`, reviewed by Codex, and **rejected**: it failed open on every option it did not enumerate. See "Revision 2 — why the deny-list failed".
 - **Plan:** `docs/superpowers/plans/2026-08-27-arg-grammar.md`
 - **Scope:** Follow-up to Spec C, opened by a Codex review of `feat/spec-c-tool-boundary` and confirmed by direct execution against the branch.
 - **Depends on:** Spec C (`Policy.command_argv/1`, argv-direct execution). This spec assumes both are already in `main`.
@@ -43,204 +43,249 @@ Two claims from the same review did not survive verification, and are recorded h
 - **`Path.basename(program)` vs. the executed path.** `ensure_allowed_shell_command/1` allow-lists `Path.basename(program)` while `ShellCommand.run/2` passes the original `program` to `System.find_executable/1`. This is a real validate-vs-execute mismatch and Section 3 closes it — but it is **not** currently exploitable. Erlang's `os:find_executable/1` resolves a *relative* name by joining it onto each `PATH` entry, never onto the process cwd, so `tmp/pwd` cannot resolve to a workspace binary. Absolute program paths are already rejected by `embedded_absolute_path/1`. Note also that the pre-Spec-C code (`sh -lc` with `cd: workspace`) *did* execute `tmp/pwd` from the workspace; Spec C improved this.
 - **`ApplyPatch.apply_validated/2` being public.** `@doc false` hides a function from docs, not from callers, so a hand-built proposal map can reach the write path without `PatchValidator`. This is exactly the test seam Spec C's plan specified, it has no production caller, and closing it costs a public-API change for no verified attack. Left as-is deliberately; revisit only if a second caller appears.
 
+## Revision 2 — why the deny-list failed
+
+Revision 1 specified, under Non-Goals, "a conservative **allow-list of options** … **anything unrecognised is rejected**". What got implemented was the opposite: two deny-list maps (`@mutating_options`, `@root_repointing_options`) consulted with `Map.get(program, [])`, so an unenumerated option — or any option of an unenumerated program — carried no restriction at all. A Codex review of the implementation branch found the gap, and every case below was then re-executed independently through `MrEric.Tools.ShellCommand.run/2` against a temp `workspace_root`.
+
+| Command | Result | Effect |
+|---------|--------|--------|
+| `rg --pre=./pre_hook needle inside.txt` | ALLOWED exit 0 | **Executed an arbitrary child process** — the hook ran and wrote its marker |
+| `git --config-env=core.pager=X status` | ALLOWED | Passed the gate (exit 128 only because the named env var was unset) |
+| `sed -Ei.bak s/foo/bar/ inside.txt` | ALLOWED exit 0 | **Rewrote the file**, `.bak` created |
+| `sed -ni.bak s/foo/bar/p inside.txt` | ALLOWED exit 0 | **Rewrote the file** |
+| `grep -nf../outside/patterns inside.txt` | ALLOWED exit 0, `2:needle` | **Read outside the workspace** |
+| `rg -nf../outside/patterns inside.txt` | ALLOWED exit 0, `2:needle` | **Read outside the workspace** |
+| `sed -nf../outside/sed_script inside.txt` | ALLOWED exit 0, `OUTSIDE_SCRIPT` | Executed an external sed script |
+| `sed -n 1w../outside/marker inside.txt` | ALLOWED exit 0 | **Wrote outside the workspace** |
+| `git diff --output=target.txt` | ALLOWED exit 0 | **Truncated a file** (`KEEP-ME` → empty) |
+| `rg -L OUTSIDE_ONLY .` | ALLOWED exit 0 | Followed a symlink out of the workspace |
+
+Three distinct implementation faults, one architectural one.
+
+**a. Bundled short options defeat token-level regexes.** `@mutating_options` matched `~r/^-{1,2}i/` against whole tokens, so it saw `-i` but not the `i` inside `-Ei` or `-ni`. POSIX short options bundle; any check that reads a token as an opaque string will keep missing them.
+
+**b. `option_value_paths/1` guessed the option name.** It took the *first letter* as the name and everything after it as the value, so `-nf../outside/patterns` yielded the value `f../outside/patterns`, which `Path.expand/2` resolved to `<workspace>/f../outside/patterns` — inside the workspace, because the `..` sits inside a segment named `f..`. The path check then passed. Extracting a value requires knowing the option's **arity**, which requires knowing the program.
+
+**c. It also mis-classified values that are not paths.** `-e` and `--regexp` carry a *pattern*; `--color` carries a literal. Resolving them as paths rejected `grep -e/etc/passwd`, `grep --regexp=/etc/passwd`, and `grep -- -f../needle` — all legitimate. The same stage never modelled `--`, so option parsing did not stop where it should.
+
+**d. Architecturally, a deny-list of dangerous options can never be finished.** `rg --pre` and `rg --hostname-bin` name a program to run. `git --config-env` and `git -c` set config that can name a program to run. `git --output` writes. `rg -L` and `ls -L` follow symlinks out. `sed`'s script language has `w` (write), `r` (read), and `e` (execute) commands, plus `-f` to load a script from a file. Each of these had to be discovered one at a time, and the next one is always unenumerated.
+
+Revision 2 therefore inverts the check, as Revision 1's own Non-Goals said it should: **a per-program grammar that allow-lists options by name and arity, classifies each value as a path, a pattern, or a literal, and rejects everything it does not recognise.**
+
+`sed` is **removed from `@allowed_shell_commands`.** It is not an option-flag problem: `sed` is a scripting language whose scripts can read, write, and (GNU) execute, so bounding it means parsing sed scripts. `grep` and `rg` cover the read-oriented use cases the allow-list exists for. This narrows the allow-list; Spec C's constraint was against *widening* it.
+
+Ordering is not implicated. `ensure_safe_command/1` → option gate → path resolution runs in a single `with`, and an early refusal stops the command outright. The defect was classification, not sequence.
+
 ## Goals
 
-1. A path carried inside an option token is resolved through `Policy.resolve_workspace_path/2`, whatever its attachment syntax.
-2. Mutating options are rejected regardless of their position in the argv vector.
-3. Options that re-point a program's notion of its own root or that can name a program to execute are rejected per-program.
-4. The program token is a bare name, so the string that was allow-listed is the string that gets resolved and executed.
-5. All four hold for `ShellCommand.run/2` called directly, not only through `Executor`.
+1. An option is accepted only if the program's grammar names it. Unknown option, unknown program → refused.
+2. A value is resolved as a path only when the grammar says that option takes a path — arity-correct, bundle-aware, and identical for attached and separated forms.
+3. A value that is a pattern or a literal is never resolved as a path.
+4. `--` stops option parsing; operand position decides pattern vs. path.
+5. The program token is a bare allow-listed name, so the string that was checked is the string that is executed.
+6. All of the above hold for `ShellCommand.run/2` called directly, not only through `Executor`.
 
 ## Non-Goals
 
-- **Modelling each program's full grammar.** The aim is a conservative allow-list of options, not a parser for `git`. Anything unrecognised is rejected.
-- **Widening `@allowed_shell_commands`.** It stays `~w(pwd ls cat sed grep rg git)`.
-- **Process sandboxing.** A program that legitimately reads a workspace file can still do anything else its own binary permits. Out of scope, as in Spec C.
-- **Closing the residual `File.write!/2` race.** Unchanged from Spec C: Erlang exposes no `O_NOFOLLOW`.
-- **Retrofitting `main`'s history.** These are pre-existing defects; this spec fixes them forward.
+- **Completeness of each program's real grammar.** The tables are deliberately small. An option nobody uses is better absent than guessed at — absence is refusal, and refusal is recoverable (the model retries a simpler form).
+- **Keeping `sed`.** Removed from the allow-list; see Revision 2.
+- **Widening `@allowed_shell_commands`.** It only narrows.
+- **Modifying `@forbidden_shell_syntax` or `@dangerous_command_patterns`.** They stay byte-identical and act as the first-pass string filter.
+- **Process sandboxing**, and **closing the residual `apply_patch` write race**. Both out of scope, as in Spec C.
 
 ## Architecture overview
 
-One new private stage inside `Policy`, and two tightened existing ones. No new modules, no schema changes, no result-shape changes.
+One table and one walker replace three ad-hoc stages. No new modules, no schema changes, no result-shape changes.
 
 ```
 authorize(:shell_command, args, opts)
   |
-  |- normalize_command/1                 (unchanged)
+  |- normalize_command/1                (unchanged)
   |- ensure_safe_command/1
-  |    |- @forbidden_shell_syntax        (unchanged)
-  |    |- @dangerous_command_patterns    (unchanged -- see Section 2 on why)
-  |    `- ensure_allowed_shell_command/1 (TIGHTENED: bare program name only)
-  |- ensure_program_options_allowed/1    (NEW: per-program option allow-list)
-  `- ensure_command_paths_allowed/2
-       `- validate_command_token_path/2  (TIGHTENED: extract option-attached values)
+  |    |- @forbidden_shell_syntax       (unchanged -- first-pass string filter)
+  |    |- @dangerous_command_patterns   (unchanged -- first-pass string filter)
+  |    `- ensure_allowed_shell_command/1 (bare program name; program must have a grammar)
+  `- ensure_argv_allowed/2              (NEW: the grammar walker; replaces
+                                          ensure_program_options_allowed/1,
+                                          ensure_command_paths_allowed/2,
+                                          validate_command_token_path/2,
+                                          option_value_paths/1,
+                                          embedded_absolute_path/1,
+                                          git_subcommand/1)
 ```
 
-`ensure_program_options_allowed/1` is a new step rather than more entries in `@dangerous_command_patterns`, because the deny-list operates on the raw command *string* and this check needs the *argv vector* — the same vector `command_argv/1` already produces and `ShellCommand` already executes. Set-based reasoning on argv is what makes sub-cause 2 fixable at all.
+The string deny-lists stay as a cheap first pass. They are belt to the grammar's braces, and Spec C's constraint keeps them byte-identical.
 
-Spec C's constraint "do not touch `@forbidden_shell_syntax` or `@dangerous_command_patterns`" is preserved literally: both attributes keep their current contents. The new coverage is added alongside them, on the argv vector, where it can be positional-order-independent.
+`ensure_argv_allowed/2` is the only thing that resolves a path from a command. That is the point: a token is checked as a path **because the grammar says that option takes a path**, not because it happens to contain a `/`. Both Revision 1 faults (b) and (c) disappear as a class.
 
-## Section 1 — Option-attached path extraction
+### The grammar table
 
-### Changes
+Each program maps to `%{short: %{...}, long: %{...}, operands: ...}`.
 
-Add a private helper that, given a token, returns every path-like value it carries:
+- `short` keys are **single characters**, so bundles decompose correctly. Values are `:flag` (no argument), or `:path` / `:pattern` / `:literal` (takes an argument, attached or as the next token).
+- `long` keys are full `--names`. Same value kinds.
+- `operands` is `:none`, `:paths`, `:pattern_then_paths` (the first bare operand is a pattern unless one already arrived via `-e`/`-f`), or `{:subcommand, table}` for `git`.
 
 ```elixir
-# `-fPATTERNS`, `--file=PATTERNS`, `--git-dir=../store`
-defp option_value_paths(token)
+@program_grammar %{
+  "pwd" => %{short: %{"P" => :flag, "L" => :flag}, long: %{}, operands: :none},
+
+  "cat" => %{short: %{"n" => :flag, "b" => :flag, "s" => :flag},
+             long: %{}, operands: :paths},
+
+  "ls"  => %{short: %{"1" => :flag, "a" => :flag, "A" => :flag, "l" => :flag,
+                      "h" => :flag, "r" => :flag, "t" => :flag, "S" => :flag,
+                      "F" => :flag, "d" => :flag, "p" => :flag, "R" => :flag,
+                      "G" => :flag},
+             long: %{"--color" => :literal}, operands: :paths},
+  # NB: `-L` (dereference symlinks) is absent on purpose.
+
+  "grep" => %{short: %{... "e" => :pattern, "f" => :path,
+                       "m" => :literal, "A" => :literal, ...},
+              long:  %{"--regexp" => :pattern, "--file" => :path,
+                       "--color" => :literal, ...},
+              operands: :pattern_then_paths},
+
+  "rg"  => %{short: %{... "e" => :pattern, "f" => :path, "g" => :literal, ...},
+             long:  %{"--version" => :flag, "--regexp" => :pattern,
+                      "--file" => :path, "--glob" => :literal, ...},
+             operands: :pattern_then_paths},
+  # NB: `--pre`, `--hostname-bin`, `-L`, `--follow` are absent on purpose.
+
+  "git" => %{short: %{"C" => :path}, long: %{"--no-pager" => :flag},
+             operands: {:subcommand, @git_subcommands}}
+}
 ```
 
-Rules, deliberately conservative:
+`@allowed_shell_commands` becomes `~w(pwd ls cat grep rg git)` — `sed` removed — and a compile-time assertion pins it to `Map.keys(@program_grammar)` so the two cannot drift.
 
-- If the token does not start with `-`, it is not an option; return `[]` and let the existing branches handle it as a bare path.
-- If the token is `--opt=VALUE`, return `[VALUE]` when `VALUE` is non-empty.
-- If the token is `-XVALUE` where `X` is a single letter and `VALUE` is non-empty, return `[VALUE]`.
-- Otherwise return `[]`.
+`grep` keeps `-L` (files-without-match, harmless) while `rg` and `ls` do not (follow-symlinks). Per-program tables are what make that distinction expressible; a global deny-list could not.
 
-Then rewrite `validate_command_token_path/2` so the option branch runs *before* the existing path branches:
+`@git_subcommands` covers `status`, `diff`, `log`, `show`, each with its own conservative flag set. `--output` is absent from `diff`, `-c` and `--config-env` are absent from the git globals, and `--git-dir` / `--work-tree` / `--exec-path` / `--namespace` are absent by construction — nothing needs to name them, because absence *is* rejection now.
 
-```elixir
-defp validate_command_token_path(token, opts) do
-  case option_value_paths(token) do
-    [] -> validate_plain_token_path(token, opts)
-    values -> Enum.reduce_while(values, :ok, &validate_option_value(&1, &2, opts))
-  end
-end
+### The walker
+
+```
+walk(tokens, grammar, state):
+  "--"          -> every remaining token is an operand
+  "-"           -> stdin, skip
+  "--name[=v]"  -> look up in grammar.long; unknown => :dangerous_command
+                   :flag with an attached value => :dangerous_command
+                   otherwise take v (attached, else next token) and classify
+  "-abc..."     -> walk the bundle left to right:
+                     :flag            => continue to the next character
+                     value-taking     => the rest of the bundle is the value,
+                                         or the next token when the bundle ends
+                     unknown          => :dangerous_command
+  operand       -> per grammar.operands
 ```
 
-`validate_option_value/3` applies the same rules `validate_plain_token_path/2` applies today — `://` passthrough, `..` rejection, absolute/relative resolution through `resolve_workspace_path/2`, `secret_path?/1` — to the extracted value.
+Classification:
 
-`embedded_absolute_path/1` becomes redundant for the `=` shape it currently covers and is folded into `option_value_paths/1`. It is kept for bare tokens that embed an absolute path with no option prefix.
+| Kind | Check |
+|------|-------|
+| `:path` | `Policy.resolve_workspace_path/2` — containment, symlink-segment walk, `secret_path?/1` |
+| `:pattern` | none — it is a regex, never opened |
+| `:literal` | none — enumerated case by case, and only where an unchecked value is safe (`--color=auto`, `-m 5`, `--glob`) |
 
-### Behaviour deltas
+A missing value for a value-taking option is `{:error, :invalid_args}`.
 
-- `grep -f../outside/p f.txt` and `grep -f/etc/passwd f.txt` → `{:error, :outside_workspace}` (was `{:ok, ...}`).
-- `git --git-dir=../store status` → `{:error, :outside_workspace}` (was `{:ok, ...}`); also independently rejected by Section 3.
-- `ls --color=auto` → still `{:ok, ...}`. `auto` is not path-like, resolves inside the workspace, and is not secret. This is the case that must not regress.
-- `grep -e foo f.txt` → unchanged; `-e` and `foo` are separate tokens and `foo` has no `/`.
+## Section 1 — Bundled short options and arity-correct value extraction
+
+Fixes Revision 1 faults (a) and (b).
+
+Because `short` is keyed by single characters, `-Ei.bak` decomposes to `E` (flag) then `i` — and `i` is simply not in `sed`'s table, because `sed` no longer has a table. For `grep`, `-nf../outside/patterns` decomposes to `n` (flag) then `f` (`:path`) with value `../outside/patterns`, which `resolve_workspace_path/2` rejects. The value is the *actual* value, not a guess.
 
 ### Tests
 
-New `describe "option-attached paths (Spec C-1)"` in `test/mr_eric/tools/policy_test.exs`:
-
-1. `grep -f../outside/patterns needle.txt` → `{:error, :outside_workspace}`
-2. `grep -f/etc/passwd needle.txt` → `{:error, :outside_workspace}`
+1. `grep -nf../outside/patterns needle.txt` → `{:error, :outside_workspace}`
+2. `grep -f../outside/patterns needle.txt` → `{:error, :outside_workspace}` (unbundled, Revision 1 regression guard)
 3. `grep --file=../outside/patterns needle.txt` → `{:error, :outside_workspace}`
-4. `cat --show-all=.env` → `{:error, :secret_file}`
-5. `ls --color=auto` → `{:ok, %{approval_required?: true}}` (regression guard)
+4. `grep -f ../outside/patterns needle.txt` → `{:error, :outside_workspace}` (separated value)
+5. `rg -nf../outside/patterns needle.txt` → `{:error, :outside_workspace}`
 6. `grep -rn needle lib` → `{:ok, ...}` (regression guard)
+7. `grep -f` with no value → `{:error, :invalid_args}`
 
-## Section 2 — Position-independent mutating-option rejection
+## Section 2 — Unknown options and unknown programs are refused
 
-### Changes
+Fixes Revision 1 fault (d).
 
-`@dangerous_command_patterns` keeps its current contents (Spec C constraint). The `sed -i` gap is closed in the new argv-based stage instead, where reordering cannot defeat it:
-
-```elixir
-# Options that make an otherwise read-only program write. Matched against the
-# whole argv vector, so `sed -E -i.bak` is caught as surely as `sed -i.bak`.
-@mutating_options %{
-  "sed" => [~r/^-{1,2}i/, ~r/^--in-place/]
-}
-```
-
-A token matching any regex for the resolved program name yields `{:error, :dangerous_command}`.
-
-`~r/^-{1,2}i/` covers `-i`, `-i.bak`, and `--in-place=.bak`. It also rejects `-idiotic`, which is not a real `sed` option — over-rejection is the correct failure direction here.
-
-### Behaviour deltas
-
-- `sed -E -i.bak s/a/b/ f.txt` → `{:error, :dangerous_command}` (was `{:ok, ...}`, and **wrote the file**).
-- `sed -i.bak s/a/b/ f.txt` → `{:error, :dangerous_command}` (unchanged; the string deny-list already caught it, and now the argv stage does too).
-- `sed -n 1,5p f.txt` → `{:ok, ...}`, unchanged.
+`Map.fetch/2` on the grammar, with `:error` mapped to `{:error, :dangerous_command}`, is the whole mechanism. Nothing has to be listed as dangerous.
 
 ### Tests
 
-1. `sed -E -i.bak s/foo/bar/ README.md` → `{:error, :dangerous_command}`
-2. `sed --in-place=.bak s/foo/bar/ README.md` → `{:error, :dangerous_command}`
-3. `sed -i.bak s/foo/bar/ README.md` → `{:error, :dangerous_command}` (regression guard for the string deny-list)
-4. `sed -n 1,5p README.md` → `{:ok, ...}` (regression guard)
-5. An end-to-end case in `test/mr_eric/tools/shell_command_test.exs`: write a workspace file, run `sed -E -i.bak ...` through `ShellCommand.run/2`, assert `{:error, :dangerous_command}` **and** that the file content is unchanged. This is the case that actually proves the write is prevented; the `Policy` unit tests only prove the decision.
+1. `rg --pre=./hook needle f.txt` → `{:error, :dangerous_command}`, **and no child process runs**
+2. `rg --hostname-bin=./hook needle f.txt` → `{:error, :dangerous_command}`
+3. `rg -L OUTSIDE .` → `{:error, :dangerous_command}`
+4. `ls -LR .` → `{:error, :dangerous_command}`
+5. `git --config-env=core.pager=X status` → `{:error, :dangerous_command}`
+6. `git diff --output=target.txt` → `{:error, :dangerous_command}`, **and the target file is unchanged**
+7. `sed -n 1,5p README.md` → `{:error, :dangerous_command}` (`sed` is off the allow-list)
+8. `sed -Ei.bak s/foo/bar/ README.md` → `{:error, :dangerous_command}`, **and the file is unchanged**
+9. `rg --version` → `{:ok, ...}` (regression guard — an enumerated long flag)
 
-## Section 3 — Per-program option allow-list and bare program names
+## Section 3 — Value kinds, `--`, and operands
 
-### Changes
+Fixes Revision 1 fault (c).
 
-**3-1. Reject options that re-point a program's root or name a program to run.**
+A pattern is never resolved as a path, `--` stops option parsing, and operand position determines whether a bare token is a pattern or a path.
 
-```elixir
-# Options that change what the program considers its own root, or that can
-# name another program to execute. Rejected regardless of position.
-@root_repointing_options %{
-  "git" => [~r/^--git-dir(=|$)/, ~r/^--work-tree(=|$)/, ~r/^--exec-path(=|$)/, ~r/^-c$/, ~r/^--namespace(=|$)/]
-}
-```
+### Behaviour deltas from Revision 1
 
-`-C <path>` is deliberately **not** rejected: `git_subcommand/1` already skips it when locating the subcommand, and its argument is a separate token that `ensure_command_paths_allowed/2` resolves through `Policy`. Section 1 does not change that. Rejecting `-c` (config) while allowing `-C` (chdir) is the intended asymmetry; the test suite must pin it so the two are not conflated later.
-
-**3-2. Require a bare program name.**
-
-```elixir
-defp ensure_allowed_shell_command(command) do
-  with {:ok, [program | args]} <- command_argv(command) do
-    cond do
-      String.contains?(program, "/") -> {:error, :dangerous_command}
-      program not in @allowed_shell_commands -> {:error, :dangerous_command}
-      program == "git" and git_subcommand(args) not in @allowed_git_subcommands ->
-        {:error, :dangerous_command}
-      true -> :ok
-    end
-  end
-end
-```
-
-`Path.basename/1` is dropped. With the `/` check in front of it, it can no longer differ from `program`, and keeping it would preserve the misleading impression that a path is acceptable. This makes the allow-listed string and the `System.find_executable/1` argument the same string — Goal 4.
-
-### Behaviour deltas
-
-- `git --git-dir=../store --work-tree=../outside status` → `{:error, :dangerous_command}` (was `{:ok, ...}` and **listed files outside the workspace**).
-- `git -c core.fsmonitor=evil status` → `{:error, :dangerous_command}`.
-- `git -C sub status` → `{:ok, ...}`, unchanged, with `sub` still resolved through `Policy`.
-- `./pwd`, `tmp/pwd`, `bin/git` → `{:error, :dangerous_command}` (were `{:ok, ...}`; not exploitable, but the mismatch is closed).
-- `/usr/bin/pwd` → `{:error, :outside_workspace}`, unchanged (caught earlier by absolute-path resolution).
+- `grep -e/etc/passwd f.txt` → `{:ok, ...}` (was wrongly `:outside_workspace`; `/etc/passwd` here is a regex)
+- `grep --regexp=/etc/passwd f.txt` → `{:ok, ...}` (same)
+- `grep -- -f../needle f.txt` → `{:ok, ...}` — after `--`, `-f../needle` is the pattern operand
+- `grep pattern /etc/passwd` → `{:error, :outside_workspace}` — operand after the pattern is a path
 
 ### Tests
 
-1. `git --git-dir=../gitstore --work-tree=../outside status --short` → `{:error, :dangerous_command}`
-2. `git -c core.fsmonitor=evil status` → `{:error, :dangerous_command}`
-3. `git -C sub status --short` → `{:ok, ...}` (regression guard; pins the `-c` / `-C` asymmetry)
-4. `git status --short` → `{:ok, ...}` (regression guard)
-5. `./pwd` and `tmp/pwd` → `{:error, :dangerous_command}`
-6. `pwd` → `{:ok, ...}` (regression guard)
-7. An end-to-end case in `shell_command_test.exs`: a real git repo outside the workspace, `git --git-dir=... --work-tree=... status --short` through `ShellCommand.run/2`, assert `{:error, :dangerous_command}` and that no outside content appears in any result.
+1. `grep -e/etc/passwd needle.txt` → `{:ok, ...}`
+2. `grep --regexp=/etc/passwd needle.txt` → `{:ok, ...}`
+3. `grep -- -f../needle needle.txt` → `{:ok, ...}`
+4. `grep needle /etc/passwd` → `{:error, :outside_workspace}`
+5. `cat -- note.txt` → `{:ok, ...}`
+6. `ls --color=auto` → `{:ok, ...}` (regression guard)
+7. `pwd -P` → `{:ok, ...}`; `pwd extra` → `{:error, :dangerous_command}` (`operands: :none`)
+8. `git -C sub status --short` → `{:ok, ...}` (regression guard, pins that `-C` takes a path)
+9. `git status --short` → `{:ok, ...}` (regression guard)
+
+## Section 4 — What is *not* addressed, and why
+
+- **`grep -rn token .` → `:secret_file`.** A bare operand matching `secret|credential|token` is refused because `secret_path?/1` is applied to it. This predates Spec C entirely and the bare-operand path is unchanged here. It is over-rejection of a *search term*, and fixing it means narrowing `secret_path?/1` for operands, which touches RAG's use of the same function. Left alone deliberately; note it if it becomes annoying in practice.
+- **The residual `File.write!/2` race in `apply_patch`.** Unchanged from Spec C; Erlang exposes no `O_NOFOLLOW`.
+- **Process sandboxing.** A program that legitimately reads a workspace file can still do whatever its own binary permits.
+- **`ApplyPatch.apply_validated/2` being public.** Deliberate test seam, no production caller. See Revision 1's "What is *not* broken".
 
 ## Risks and follow-ups
 
 | Risk | Mitigation |
 |------|------------|
-| The option allow-list over-rejects a legitimate command the model wants to run | Correct failure direction. The model sees `:dangerous_command` and retries with a simpler form. Every rejection listed above has a permitted equivalent. |
-| `option_value_paths/1` misreads a non-path option value as a path | Only values that survive `resolve_workspace_path/2` matter, and a non-path value like `auto` resolves inside the workspace and passes. Pinned by the `ls --color=auto` regression test. |
-| A future program added to `@allowed_shell_commands` brings an unmodelled mutating option | `@mutating_options` / `@root_repointing_options` are keyed by program name and default to "no restrictions". Adding a program **must** come with an entry or a written argument for why none is needed. Stated in the plan's constraints. |
-| Bare-program-name enforcement breaks a caller passing an absolute path | No such caller exists; absolute program paths were already rejected by `embedded_absolute_path/1`. Pinned by test. |
-| `-c` vs `-C` is conflated by a later editor | Test 3 in Section 3 fails loudly if either changes. |
+| The grammar is too small and refuses something the model legitimately wants | Correct failure direction, and cheap to widen one entry at a time with a test. Every refusal has a simpler permitted equivalent. The regression-guard set is what proves the common forms still work. |
+| Losing `sed` breaks a workflow | `sed` was read-*and-write*; the read-only half is covered by `grep`/`rg`. Only one existing test used it, and it becomes a rejection test. Golden cases use `pwd` only. |
+| A `:literal` value turns out to be path-like for some option | Literals are enumerated one option at a time, never by default. If a future entry's value can name a file, classify it `:path`. |
+| The walker mis-parses a bundle and silently allows something | Every table entry is exercised by a test, and the bypass table from Revision 2 is pinned end-to-end with effect assertions (file unchanged, no child process, nothing read from outside). |
+| Someone re-adds a program without a grammar | `@allowed_shell_commands` is pinned to `Map.keys(@program_grammar)` by a compile-time assertion, so a program with no grammar fails the build. |
+| `grep -rn token .` is still refused as `:secret_file` | Pre-existing, documented in Section 4, deliberately untouched. |
 
 Follow-ups explicitly left elsewhere:
 
 - Process sandboxing for the child — no spec owns this yet.
-- `ApplyPatch.apply_validated/2` visibility — deliberately unchanged, see "What is *not* broken".
 - `max_children` and trace/history caps — **Spec D**.
 
 ## Acceptance criteria
 
-1. `sed -E -i.bak s/foo/bar/ README.md` through `ShellCommand.run/2` returns `{:error, :dangerous_command}` **and** leaves the target file byte-identical.
-2. `grep -f<path outside the workspace> needle.txt` returns `{:error, :outside_workspace}`, for both absolute and `../`-relative forms, and for `-f` and `--file=`.
-3. `git --git-dir=... --work-tree=... status --short` returns `{:error, :dangerous_command}` and no outside content reaches any result field.
-4. `git -C sub status`, `ls --color=auto`, `grep -rn needle lib`, `sed -n 1,5p f.txt`, and `pwd` all still return `{:ok, %{approval_required?: true}}`.
-5. A program token containing `/` returns `{:error, :dangerous_command}`; `Path.basename/1` no longer appears in `ensure_allowed_shell_command/1`.
-6. `@allowed_shell_commands`, `@allowed_git_subcommands`, `@forbidden_shell_syntax`, and `@dangerous_command_patterns` are byte-identical to their Spec C state.
-7. The `shell_command` schema, the approval-request map, and every tool result shape are unchanged. `priv/evals/phase9_golden_cases.json` is unmodified and `mix mr_eric.evals` passes.
-8. `mix precommit` passes.
+Every row of the Revision 2 bypass table, re-run through `ShellCommand.run/2`, must refuse **and** show no effect:
+
+1. `rg --pre=./hook …` and `rg --hostname-bin=./hook …` → `:dangerous_command`, and the hook's marker file does **not** exist.
+2. `sed …` in any form → `:dangerous_command`; the target file is byte-identical and no `.bak` is created.
+3. `grep -nf<outside>`, `rg -nf<outside>`, and their unbundled, `--file=`, and separated-value forms → `:outside_workspace`.
+4. `git --config-env=…`, `git -c …`, `git --git-dir=…`, `git --work-tree=…`, `git diff --output=…` → `:dangerous_command`; the `--output` target is byte-identical.
+5. `rg -L …` and `ls -LR …` → `:dangerous_command`.
+6. Over-rejection is gone: `grep -e/etc/passwd f.txt`, `grep --regexp=/etc/passwd f.txt`, and `grep -- -f../needle f.txt` all return `{:ok, %{approval_required?: true}}`.
+7. The common forms still work: `pwd`, `pwd -P`, `ls -la`, `ls --color=auto`, `cat note.txt`, `cat -n note.txt`, `grep -rn needle lib`, `rg --version`, `git status --short`, `git -C sub status --short`, `git diff --stat`.
+8. `@allowed_shell_commands` is `~w(pwd ls cat grep rg git)` and equals `Map.keys(@program_grammar)`; `@forbidden_shell_syntax` and `@dangerous_command_patterns` are byte-identical to their Spec C state.
+9. The `shell_command` schema, the approval-request map, and every tool result shape are unchanged. `priv/evals/phase9_golden_cases.json` is unmodified and `mix mr_eric.evals` passes.
+10. `mix precommit` passes.
 
 ## Out of scope (tracked elsewhere)
 
