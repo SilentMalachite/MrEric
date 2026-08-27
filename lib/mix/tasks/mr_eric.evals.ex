@@ -29,13 +29,22 @@ defmodule Mix.Tasks.MrEric.Evals do
   defp run_single(name) do
     case MrEric.Evals.run_case(name) do
       {:ok, result} ->
-        {:ok, %{passed: 1, failed: 0, results: [result]}}
+        {:ok, %{passed: 1, failed: 0, skipped: [], results: [result]}}
+
+      {:error, {:case_disabled, requires}} ->
+        {:ok, %{passed: 0, failed: 0, skipped: [%{case: name, requires: requires}], results: []}}
 
       {:error, result} when is_map(result) ->
-        {:ok, %{passed: 0, failed: 1, results: [result]}}
+        {:ok, %{passed: 0, failed: 1, skipped: [], results: [result]}}
 
       {:error, reason} ->
-        {:ok, %{passed: 0, failed: 1, results: [%{case: name, status: :failed, reason: reason}]}}
+        {:ok,
+         %{
+           passed: 0,
+           failed: 1,
+           skipped: [],
+           results: [%{case: name, status: :failed, reason: reason}]
+         }}
     end
   end
 
@@ -44,8 +53,16 @@ defmodule Mix.Tasks.MrEric.Evals do
       Mix.shell().info("#{result.case}: #{result.status}")
     end)
 
-    Mix.shell().info("passed=#{summary.passed} failed=#{summary.failed}")
+    Enum.each(summary.skipped, fn skipped ->
+      Mix.shell().info("#{skipped.case}: skipped (requires: #{Enum.join(skipped.requires, ", ")})")
+    end)
 
+    Mix.shell().info(
+      "passed=#{summary.passed} failed=#{summary.failed} skipped=#{length(summary.skipped)}"
+    )
+
+    # A skip is a legitimate machine configuration, not a failure. It is only
+    # forbidden from being invisible.
     if summary.failed > 0 do
       Mix.raise("MrEric evals failed")
     end

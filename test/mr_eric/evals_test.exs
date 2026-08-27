@@ -68,6 +68,45 @@ defmodule MrEric.EvalsTest do
     assert :secret_leak in failure.failed_assertions
   end
 
+  test "list_cases/0 returns every case, including ones this machine cannot run" do
+    all = Evals.list_cases()
+    {enabled, skipped} = Evals.partition_cases()
+
+    assert length(all) == length(enabled) + length(skipped)
+    assert Enum.all?(enabled, &EvalCase.enabled?/1)
+    refute Enum.any?(skipped, &EvalCase.enabled?/1)
+  end
+
+  test "run_all/1 reports skipped cases rather than dropping them" do
+    assert {:ok, summary} = Evals.run_all()
+
+    assert is_list(summary.skipped)
+    assert summary.passed + summary.failed == length(summary.results)
+
+    {_enabled, skipped} = Evals.partition_cases()
+    assert length(summary.skipped) == length(skipped)
+
+    Enum.each(summary.skipped, fn entry ->
+      assert is_binary(entry.case)
+      assert is_list(entry.requires)
+    end)
+  end
+
+  test "run_case/2 distinguishes an unknown name from a disabled case" do
+    assert {:error, :unknown_eval_case} = Evals.run_case("no_such_case_at_all")
+
+    case Evals.partition_cases() do
+      {_enabled, []} ->
+        # Every case runs on this machine; the disabled branch is covered by
+        # the unit below rather than by the fixture.
+        :ok
+
+      {_enabled, [disabled | _]} ->
+        assert {:error, {:case_disabled, requires}} = Evals.run_case(disabled.name)
+        assert requires == disabled.requires
+    end
+  end
+
   test "mix mr_eric.evals task can run a single case" do
     output =
       capture_io(fn ->
