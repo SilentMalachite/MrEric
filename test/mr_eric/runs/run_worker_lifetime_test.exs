@@ -63,6 +63,16 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     assert Process.alive?(pid)
   end
 
+  test "ignores a stray :reap message when the run is not terminal" do
+    {_run, pid} = start_worker(@reap_opts)
+    ref = Process.monitor(pid)
+
+    send(pid, :reap)
+
+    refute_receive {:DOWN, ^ref, :process, ^pid, _reason}, 300
+    assert Process.alive?(pid)
+  end
+
   test "schedules the stop exactly once, even when late events arrive" do
     {_run, pid} = start_worker(terminal_run_ttl_ms: 5_000, skip_history: true)
 

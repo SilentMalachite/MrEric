@@ -8,10 +8,22 @@ defmodule MrEric.Evals.Runner do
   alias MrEric.Runs
   alias MrEric.Runs.Events
   alias MrEric.Runs.Run
+  alias MrEric.Runs.RunSupervisor
   alias MrEric.Runs.Trace
 
   @timeout_ms 5_000
   @eval_owner_id "eval-runner"
+
+  # A RunSupervisor dedicated to evals, independent of the app's default
+  # one (and its production-sized max_concurrent_runs cap). Golden cases
+  # run sequentially against a single shared supervisor instance, so a
+  # cap here would eventually gate a large-enough batch on however
+  # promptly earlier cases' workers reap -- exactly the kind of
+  # wall-clock-tuned coupling this eval harness must not have. Sized to a
+  # comfortable multiple of the golden-case count (14 as of this writing)
+  # so ordinary suite growth cannot approach the cap either.
+  @eval_supervisor MrEric.Evals.RunSupervisor
+  @eval_max_children 64
 
   def run_case(%EvalCase{} = eval_case, opts \\ []) do
     ensure_runtime_started()
@@ -46,18 +58,17 @@ defmodule MrEric.Evals.Runner do
           fail_role: role_value(eval_case.fail_role),
           workspace_root: workspace,
           skip_history: true,
-          # Spec D: evals read the run immediately after `run_completed`, so
-          # the worker can go straight away. `mix mr_eric.evals` runs in :dev,
-          # where the default grace is a minute — long enough for a batch of
-          # cases to exhaust the run pool (all 14 golden cases share the
-          # single default RunSupervisor and its 8-slot cap). 100ms is short
-          # enough that earlier cases' workers reap well before later cases
-          # need their slot (measured: the full batch runs in ~700ms, so a
-          # worker is long gone after its 100ms grace) while still leaving a
-          # wide margin over the near-instant `Runs.get_run/1` read this
-          # function does right after `collect_events/4` sees the terminal
-          # event.
-          terminal_run_ttl_ms: 100,
+          supervisor: @eval_supervisor,
+          # Spec D: nothing here is racing a concurrency cap (see
+          # @eval_supervisor above) -- this is purely memory hygiene. Each
+          # worker holds its whole accumulated Run (every stage's content
+          # plus the trace) until it reaps, but this function reads the run
+          # exactly once, synchronously, right after `collect_events/4`
+          # observes the terminal event, and nothing looks at it again after
+          # that. 1s comfortably clears that in-process read (sub-millisecond)
+          # while not needlessly holding a finished case's memory for the
+          # interactive-UI-oriented default grace (a full minute).
+          terminal_run_ttl_ms: 1_000,
           max_concurrency: 1,
           max_total_runtime_ms: 1_500,
           max_tool_calls_per_run: 4,
@@ -210,6 +221,15 @@ defmodule MrEric.Evals.Runner do
     else
       {:ok, _apps} = Application.ensure_all_started(:mr_eric)
       :ok
+    end
+
+    ensure_eval_supervisor_started()
+  end
+
+  defp ensure_eval_supervisor_started do
+    case RunSupervisor.start_link(name: @eval_supervisor, max_children: @eval_max_children) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
   end
 end
