@@ -1,6 +1,7 @@
 defmodule MrEric.Plugs.EnsureOwnerIdTest do
   use ExUnit.Case, async: true
-  use Plug.Test
+  import Plug.Test
+  import Plug.Conn
 
   alias MrEric.Plugs.EnsureOwnerId
 
