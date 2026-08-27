@@ -115,6 +115,8 @@ defmodule MrEric.Runs.RunWorker do
     worker_opts = Keyword.get(opts, :opts, [])
     auto_start = Keyword.get(opts, :auto_start, true)
 
+    Process.send_after(self(), :hard_deadline, hard_deadline_ms(worker_opts))
+
     state = %{
       run: run,
       opts: worker_opts,
@@ -346,6 +348,31 @@ defmodule MrEric.Runs.RunWorker do
   end
 
   @impl true
+  def handle_info(:hard_deadline, state) do
+    if Run.terminal?(state.run) do
+      # The reap timer owns the stop from here.
+      {:noreply, state}
+    else
+      shutdown_task(state.task)
+
+      {event, payload} =
+        Events.normalize_event(state.run.id, {:run_failed, %{error: :run_lifetime_exceeded}})
+
+      run = Run.apply_event(state.run, {event, payload})
+
+      state =
+        state
+        |> put_run(run)
+        |> Map.put(:task, nil)
+        |> maybe_resolve_pending_tool_approvals(:run_failed)
+
+      Events.broadcast(run.id, {event, payload})
+
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({ref, _result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | task: nil}}
@@ -445,15 +472,34 @@ defmodule MrEric.Runs.RunWorker do
     Keyword.get(state.opts, :terminal_run_ttl_ms, Limits.fetch!(:terminal_run_ttl_ms))
   end
 
+  # The absolute ceiling on a worker's life: the orchestrator's own runtime
+  # budget plus a grace period. With a finite supervisor pool, a worker that
+  # never terminalises is not a slow leak — it is one slot of the pool, gone
+  # for good.
+  defp hard_deadline_ms(opts) do
+    max_total_runtime_ms =
+      Keyword.get(
+        opts,
+        :max_total_runtime_ms,
+        Orchestrator.default_tool_limits().max_total_runtime_ms
+      )
+
+    grace =
+      Keyword.get(opts, :hard_deadline_grace_ms, Limits.fetch!(:hard_deadline_grace_ms))
+
+    max_total_runtime_ms + grace
+  end
+
   defp maybe_resolve_pending_tool_approvals(state, event)
        when event in [:run_completed, :run_failed, :run_cancelled] do
     Enum.each(state.pending_tool_approvals, fn {approval_id, request} ->
       broadcast_tool_approval_resolved(state, request, false, "Run finished before approval.")
 
       {ev, payload} =
-        Events.normalize_event(state.run.id,
-          {:tool_approval_expired,
-           %{approval_id: approval_id, reason: :run_terminated}})
+        Events.normalize_event(
+          state.run.id,
+          {:tool_approval_expired, %{approval_id: approval_id, reason: :run_terminated}}
+        )
 
       Events.broadcast(state.run.id, {ev, payload})
     end)
@@ -693,8 +739,10 @@ defmodule MrEric.Runs.RunWorker do
     pending = Map.delete(state.pending_tool_approvals, approval_id)
 
     {event, payload} =
-      Events.normalize_event(state.run.id,
-        {:tool_approval_expired, %{approval_id: approval_id, reason: reason}})
+      Events.normalize_event(
+        state.run.id,
+        {:tool_approval_expired, %{approval_id: approval_id, reason: reason}}
+      )
 
     Events.broadcast(state.run.id, {event, payload})
     %{state | pending_tool_approvals: pending}

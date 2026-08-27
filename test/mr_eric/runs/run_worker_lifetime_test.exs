@@ -132,4 +132,84 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
                opts ++ [id: "run-slot-#{System.unique_integer([:positive])}"]
              )
   end
+
+  test "terminalises a run that never finishes, at the absolute deadline" do
+    run_id = "run-deadline-#{System.unique_integer([:positive])}"
+    run = Run.new("stuck", owner_id: "lifetime-owner", id: run_id)
+
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [
+          orchestrator_module: IdleOrchestrator,
+          max_total_runtime_ms: 20,
+          hard_deadline_grace_ms: 10,
+          terminal_run_ttl_ms: 5_000,
+          skip_history: true
+        ],
+        auto_start: true,
+        name: nil
+      )
+
+    assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, 1_000
+    assert message =~ "maximum lifetime"
+
+    assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+  end
+
+  test "the deadline is inert once the run has already finished" do
+    run_id = "run-deadline-ok-#{System.unique_integer([:positive])}"
+    run = Run.new("quick", owner_id: "lifetime-owner", id: run_id)
+
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [
+          max_total_runtime_ms: 20,
+          hard_deadline_grace_ms: 10,
+          terminal_run_ttl_ms: 5_000,
+          skip_history: true
+        ],
+        auto_start: false,
+        name: nil
+      )
+
+    send(pid, {:run_completed, %{final: "fast"}})
+    assert_receive {:run_completed, %{run_id: ^run_id}}, 1_000
+
+    refute_receive {:run_failed, %{run_id: ^run_id}}, 300
+    assert {:ok, %Run{status: :completed}} = RunWorker.get_run(pid)
+  end
+
+  test "a hard-deadline failure also releases the supervisor slot" do
+    sup_name = :"run_sup_deadline_#{System.unique_integer([:positive])}"
+    start_supervised!({RunSupervisor, name: sup_name, max_children: 1})
+
+    opts = [
+      orchestrator_module: IdleOrchestrator,
+      supervisor: sup_name,
+      skip_history: true,
+      max_total_runtime_ms: 20,
+      hard_deadline_grace_ms: 10,
+      terminal_run_ttl_ms: 30
+    ]
+
+    first_id = "run-deadline-slot-#{System.unique_integer([:positive])}"
+    assert {:ok, _run} = Runs.start_run("stuck", "lifetime-owner", opts ++ [id: first_id])
+
+    pid = RunWorker.test_pid(first_id)
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+    assert {:ok, _run} =
+             Runs.start_run(
+               "next",
+               "lifetime-owner",
+               opts ++ [id: "run-deadline-slot-#{System.unique_integer([:positive])}"]
+             )
+  end
 end
