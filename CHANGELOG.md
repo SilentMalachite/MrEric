@@ -19,7 +19,8 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 - run 寿命と資源上限を追加（Spec D、2026-08-27）。
   - `MrEric.Runs.Limits` が `max_concurrent_runs` / `terminal_run_ttl_ms` /
-    `hard_deadline_grace_ms` / `max_trace_entries` / `max_history_entries` を所有。
+    `hard_deadline_grace_ms` / `max_trace_entries` / `max_trace_payload_chars` /
+    `max_history_entries` を所有。
     既定値はこのモジュールの `@defaults` のみに書き、`config :mr_eric, :run_limits` は上書き専用。
     未知キーは `fetch!/1` が例外にする。
   - `RunSupervisor` に `max_children` を設定し、上限到達時は `MrEric.Runs.start_run/3` が
@@ -27,8 +28,18 @@ deterministic eval harness、session-bound run ownership、local-first provider 
   - `RunWorker` は terminal 到達から `terminal_run_ttl_ms` 後に自身を停止し、
     `max_total_runtime_ms + hard_deadline_grace_ms` の絶対期限で
     `:run_lifetime_exceeded` として必ず terminal になる。
-  - `MrEric.Runs.Trace` は `stage_chunk` を role ごとのカウンタに畳み（本文は
-    `Run.stages[role].content` に残る）、`entries` を上限で切って `dropped_entries` に記録。
+  - tool 実行（`Executor.request_tool/4` と `Executor.execute_approved/2`）は RunWorker 内の
+    Task で走る。`System.cmd/3` に timeout はないため、GenServer 内で同期実行していた頃は
+    停止した `shell_command` が `:hard_deadline` 自体を塞ぎ、絶対期限に上限がなかった。
+    `put_run/2` は run が terminal になった時点でこの Task を落とす。
+  - `MrEric.Runs.Trace` は `stage_chunk` を role ごとのカウンタに畳み、`stage_completed` の
+    `content` を捨て（どちらの本文も `Run.stages[role].content` に残る）、`entries` を上限で
+    切って `dropped_entries` に記録し、残る文字列を `max_trace_payload_chars` で切り詰める。
+    切り詰めは `Errors.redact/1` の**後**に行う（先に切ると秘密が半分だけ残り、redactor が
+    一致しなくなる）。
+  - 失敗の分類は `Events.normalize_event/2` が生の理由を持っている時点で一度だけ取り、
+    `:error_class` として運ぶ。`Trace` はそれを読む。サニタイズ済みメッセージからの
+    キーワード再導出は行わない（`:run_lifetime_exceeded` が `:unknown` になっていた原因）。
   - 完了 run 履歴は `MrEric.Agent` と LiveView の history stream の双方で上限を持つ。
 - 起動時の local-first provider 判定を追加（2026-06-07）。
   - `MrEric.LLM.ProviderResolver` が `[:lmstudio, :ollama, :openai]` を短い timeout でヘルスチェックし、最初に到達できた provider をキャッシュ。
