@@ -89,9 +89,11 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   `{tool, args, approval_id, tool_call_id, owner_id}`, and requests carry an `expires_at` TTL
   (30 min). Approved execution goes only through `Executor.execute_approved/2`.
 - **Real filesystem writes happen only via `:apply_patch`, only after approval.** Patch
-  validation (`MrEric.Tools.PatchValidator`) runs twice — before requesting approval and again
-  immediately before applying — rejecting workspace escapes, protected secret paths, symlink
-  escapes, binary/oversized/stale/deletion patches, and disallowed new-file extensions.
+  validation (`MrEric.Tools.PatchValidator`) runs three times — at `Policy.authorize/3`,
+  again in `ApplyPatch.run/2` before applying, and a final `Policy.resolve_workspace_path/2`
+  re-resolution immediately before each write — rejecting workspace escapes, protected secret
+  paths, symlink escapes (including ones swapped in after validation), binary/oversized/stale/
+  deletion patches, and disallowed new-file extensions.
 - **Never implement** `git commit`/`push`/`reset`/`clean`, force push, or auto-rollback.
   Rollback is manual via the displayed `git diff`.
 
@@ -101,6 +103,10 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
 - `:shell_command` is restricted to a read-oriented allowlist + read-only git subcommands,
   rejects shell expansion/redirection/mutating commands, and passes only an **env-var
   allowlist** to children (config key `:shell_env_allowlist`) so secrets don't leak.
+  Approved commands are executed as a **direct argv vector** (`Policy.command_argv/1` →
+  `System.cmd/3`) — there is no shell process, so nothing re-parses the validated string and
+  no login-shell profile is sourced. `ShellCommand.run/2` re-runs `Policy.authorize/3` itself,
+  so the boundary holds even when the tool is called without `Executor`.
 - Never put API keys, auth headers, cookies, provider secrets, or `reply_to` pids into PubSub
   events, assigns, templates, user-facing logs, traces, or eval output.
 

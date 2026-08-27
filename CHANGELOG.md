@@ -11,8 +11,8 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は Spec A（秘密情報衛生）と Spec B（Run 所有権）まで `main` に入っています。
-残りは Spec C–F です。進捗は `docs/superpowers/README.md` を参照してください。
+監査由来のセキュリティ hardening は Spec A–C まで `main` に入っています。残りは Spec D–F です。
+進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
 
@@ -79,6 +79,16 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 ### Security
 
+- tool 境界を hardening（Spec C、2026-08-27）。
+  - 承認済み `shell_command` を `sh -lc` 経由から **argv 直実行**に変更。`Policy.command_argv/1` を
+    検証と実行で共有する唯一の tokenizer とし、文字列が別の文法で再解釈される経路を排除。
+    login shell が dotfile から子プロセス環境を再汚染する問題も同時に解消。
+  - `Policy.secret_path?/1` の `.git` / `.ssh` セグメント照合を case-insensitive に変更。
+    case-insensitive filesystem（macOS 既定）で `.GIT/config` が読めていた穴を塞いだ。
+  - `ShellCommand.run/2` が自身で `Policy.authorize/3` を再実行。`Executor` を経由しない
+    呼び出しでも tool 境界が効く。
+  - `ApplyPatch` が書き込み直前に各 change の path を `Policy.resolve_workspace_path/2` で
+    再解決。検証後に差し替えられた symlink を検知する。
 - コミット済みだった `secret_key_base` リテラルを除去し、`.env*` を gitignore 対象にした（Spec A）。
 - RAG indexer が `config/` と secret-bearing path を既定で除外するように変更。`Policy.secret_path?/1` を公開して再利用。
 - `SecretChecker` の sensitive-key 判定を修正し、キー名が敏感な値をスキャン対象外にしないようにした。
