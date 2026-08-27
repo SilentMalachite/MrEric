@@ -84,6 +84,10 @@ defmodule MrEric.Evals.Runner do
          %{
            status: run.status,
            final: run.final,
+           # The planner prompt is the only place RAG context reaches a model,
+           # and `SecretChecker.scan/1` walks `actual` by denylist -- a field
+           # that is not here is a field that is never scanned.
+           plan: Run.stage(run, :planner),
            trace: run.trace,
            changed_files: run.changed_files,
            drafts: [
