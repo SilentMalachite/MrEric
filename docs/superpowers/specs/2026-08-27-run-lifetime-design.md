@@ -1,7 +1,7 @@
 # Spec D — Run Lifetime and Resource Limits
 
 - **Date:** 2026-08-27
-- **Status:** Designed. Not yet implemented.
+- **Status:** Implemented on `spec-d-run-lifetime` (2026-08-27). Not yet on `main`.
 - **Plan:** `docs/superpowers/plans/2026-08-27-run-lifetime.md`
 - **Scope:** Fourth of six hardening specs derived from the 2026-05-05 audit report.
 - **Tracks audit findings:** unbounded `RunSupervisor` children, `RunWorker` processes that outlive their run, unbounded `Runs.Trace` growth, unbounded completed-run history.

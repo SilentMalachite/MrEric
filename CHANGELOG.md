@@ -11,7 +11,8 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は、Spec A–D が `main` に入っており、残りは Spec E–F です。
+監査由来のセキュリティ hardening は、Spec A–C が `main` に入っています。Spec D は
+`spec-d-run-lifetime` で実装済みで `main` 未マージ、残りは Spec E–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
@@ -197,5 +198,6 @@ deterministic eval harness、session-bound run ownership、local-first provider 
 
 - 2026-06-07 の `main` には Phase 2 LLM orchestration、Phase 5A tool approval、Phase 5B RAG / MCP interface、Phase 5C tool loop、Phase 6 patch apply flow、Phase 9 eval harness、Spec A/B のセキュリティ hardening、local-first provider 判定までが含まれます。
 - 2026-08-27 に README、API リファレンス、AGENTS.md、監査 spec のステータスを現行コードへ同期した。
-- 2026-05-05 監査の残りは Spec C（tool 境界）、Spec D（Run 寿命 / 資源）、Spec E（eval / RAG 正しさ）、Spec F（本番 HTTP）です。
+- 2026-05-05 監査の残りは Spec E（eval / RAG 正しさ）と Spec F（本番 HTTP）です。Spec C は
+  `main` に入り、Spec D は `spec-d-run-lifetime` で実装済み（`main` 未マージ）。
 - repository には現時点で release tag がないため、`Unreleased` は `mix.exs` version `0.1.0` 以降の main branch の状態を表します。
