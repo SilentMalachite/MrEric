@@ -114,7 +114,7 @@ Two properties matter, and both are deliberate:
 - **`fetch!/1` has no default parameter and no catch-all clause.** A typo'd key raises `FunctionClauseError` at the call site instead of returning a plausible number. Spec C-1 established this rule the hard way: `Map.get(table, key, [])` on a grammar lookup is what made the earlier deny-list fail open. Limits fail closed in a different direction — a wrong default here is a *missing* limit — so the same discipline applies.
 - **Callers may override per-run through `opts`,** using the seam that already exists. `RunWorker` reads `Keyword.get(state.opts, :terminal_run_ttl_ms, Limits.fetch!(:terminal_run_ttl_ms))`, exactly as it already reads `:orchestrator_module`, `:agent_server`, and `:skip_history`. Tests set milliseconds; production reads config. No `Application.put_env` gymnastics in the worker tests.
 
-Defaults are declared in `config/config.exs` so the values are discoverable where every other tunable lives, with `@defaults` as the fallback if the key is absent entirely.
+`@defaults` is the **only** place a default value is written. `config :mr_eric, :run_limits` is override-only, so there is no second copy of the numbers to drift. The one environment that must override is `:test`: the suite starts dozens of runs, and with reaping in place each finished worker holds its slot for the grace period, so `config/test.exs` raises `max_concurrent_runs` and shortens `terminal_run_ttl_ms` enough that no test exhausts the pool while a post-completion `Runs.get_run/1` still succeeds.
 
 **Chosen values and why:**
 
@@ -209,7 +209,7 @@ hard_ms = Keyword.get(opts, :max_total_runtime_ms, 180_000) + Limits.fetch!(:har
 Process.send_after(self(), :hard_deadline, hard_ms)
 ```
 
-On `:hard_deadline`, if the run is already terminal the message is ignored (the reap timer owns the stop). Otherwise the worker shuts the orchestrator task down with the existing `shutdown_task/1` and applies `run_failed` with `%{error: :run_lifetime_exceeded}` through the normal path — which broadcasts the event, records history, and, via `put_run/2`, schedules the reap. No new event name, no new status, no new code path: the safety net *terminates into the machinery that already exists*.
+On `:hard_deadline`, if the run is already terminal the message is ignored (the reap timer owns the stop). Otherwise the worker shuts the orchestrator task down with the existing `shutdown_task/1` and applies `run_failed` with `%{error: :run_lifetime_exceeded}` through the normal path — which broadcasts the sanitized event, resolves any pending approvals, and, via `put_run/2`, schedules the reap. It does *not* write history: `maybe_record_history/2` fires only on `run_completed` (`run_worker.ex:674-687`), and a lifetime failure is a failure like any other. No new event name, no new status, no new code path: the safety net *terminates into the machinery that already exists*.
 
 `Events.public_error(:run_lifetime_exceeded)` and `Errors.classify(:run_lifetime_exceeded) → :timeout` give it a user-facing sentence and an existing classification — a run that exceeded its absolute lifetime is a timeout by any useful definition.
 
