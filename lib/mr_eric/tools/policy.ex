@@ -10,38 +10,220 @@ defmodule MrEric.Tools.Policy do
   alias MrEric.Tools.PatchValidator
 
   @known_tool_names ~w(file_read file_write_proposal apply_patch shell_command git_status git_diff)
-  @allowed_shell_commands ~w(pwd ls cat sed grep rg git)
+  @allowed_shell_commands ~w(pwd ls cat grep rg git)
   @allowed_git_subcommands ~w(status diff log show)
 
   # Matched case-insensitively: macOS filesystems are case-insensitive by
   # default, so `.GIT/config` reaches the same bytes as `.git/config`.
   @protected_dir_segments ~w(.git .ssh)
 
-  # Options that make an otherwise read-only program write. Matched against the
-  # argv vector, so option order cannot defeat them the way it defeats the
-  # positional patterns in @dangerous_command_patterns (`sed -E -i` slips past
-  # `~r/(^|\s)sed\s+-i/`, `sed -i` does not).
+  # Per-program argument grammar. An option is accepted only if it appears here;
+  # a value is resolved as a path only if the entry says the option takes one.
   #
-  # Adding a program to @allowed_shell_commands requires an entry here, or a
-  # written argument in the spec for why the program has no mutating options.
-  @mutating_options %{
-    "sed" => [~r/^-{1,2}i/, ~r/^--in-place/]
+  # `short` is keyed by SINGLE CHARACTERS so bundles decompose correctly
+  # (`-nf../x` is `-n` then `-f ../x`, not an opaque token). Values are `:flag`
+  # (no argument) or `:path` / `:pattern` / `:literal` (takes an argument,
+  # attached or as the next token).
+  #
+  # `:literal` asserts that leaving the value unchecked is safe for THAT option.
+  # When unsure, use `:path`. Never add a lookup default -- absence must refuse.
+  @git_subcommands %{
+    "status" => %{
+      short: %{"s" => :flag, "b" => :flag, "z" => :flag},
+      long: %{
+        "--short" => :flag,
+        "--branch" => :flag,
+        "--porcelain" => :flag,
+        "--long" => :flag,
+        "--untracked-files" => :literal
+      },
+      operands: :paths
+    },
+    "diff" => %{
+      short: %{"w" => :flag, "M" => :flag, "B" => :flag, "U" => :literal},
+      long: %{
+        "--stat" => :flag,
+        "--cached" => :flag,
+        "--staged" => :flag,
+        "--name-only" => :flag,
+        "--name-status" => :flag,
+        "--numstat" => :flag,
+        "--shortstat" => :flag,
+        "--no-color" => :flag,
+        "--find-renames" => :flag,
+        "--unified" => :literal,
+        "--color" => :literal
+      },
+      operands: :paths
+    },
+    "log" => %{
+      short: %{"n" => :literal},
+      long: %{
+        "--oneline" => :flag,
+        "--stat" => :flag,
+        "--graph" => :flag,
+        "--reverse" => :flag,
+        "--no-color" => :flag,
+        "--max-count" => :literal,
+        "--format" => :literal,
+        "--pretty" => :literal,
+        "--since" => :literal,
+        "--until" => :literal,
+        "--author" => :literal
+      },
+      operands: :paths
+    },
+    "show" => %{
+      short: %{},
+      long: %{
+        "--stat" => :flag,
+        "--name-only" => :flag,
+        "--oneline" => :flag,
+        "--no-color" => :flag,
+        "--format" => :literal,
+        "--pretty" => :literal
+      },
+      operands: :paths
+    }
   }
 
-  # Options that change what the program considers its own root, or that can
-  # name another program to execute. `-C <path>` is deliberately absent: its
-  # argument is a separate token that ensure_command_paths_allowed/2 already
-  # resolves through Policy, and git_subcommand/1 already skips it. Rejecting
-  # `-c` while allowing `-C` is intentional; the test suite pins the asymmetry.
-  @root_repointing_options %{
-    "git" => [
-      ~r/^--git-dir(=|$)/,
-      ~r/^--work-tree(=|$)/,
-      ~r/^--exec-path(=|$)/,
-      ~r/^--namespace(=|$)/,
-      ~r/^-c$/
-    ]
+  @program_grammar %{
+    "pwd" => %{short: %{"P" => :flag, "L" => :flag}, long: %{}, operands: :none},
+    "cat" => %{
+      short: %{"n" => :flag, "b" => :flag, "s" => :flag},
+      long: %{},
+      operands: :paths
+    },
+    # `-L` (dereference symlinks) is absent on purpose.
+    "ls" => %{
+      short: %{
+        "1" => :flag,
+        "a" => :flag,
+        "A" => :flag,
+        "l" => :flag,
+        "h" => :flag,
+        "r" => :flag,
+        "t" => :flag,
+        "S" => :flag,
+        "F" => :flag,
+        "d" => :flag,
+        "p" => :flag,
+        "R" => :flag,
+        "G" => :flag
+      },
+      long: %{"--color" => :literal},
+      operands: :paths
+    },
+    # grep's `-L` is "files without match" and is harmless; rg's `-L` is
+    # "follow symlinks" and is not. Per-program tables make that expressible.
+    "grep" => %{
+      short: %{
+        "r" => :flag,
+        "R" => :flag,
+        "n" => :flag,
+        "i" => :flag,
+        "H" => :flag,
+        "h" => :flag,
+        "c" => :flag,
+        "l" => :flag,
+        "L" => :flag,
+        "w" => :flag,
+        "x" => :flag,
+        "v" => :flag,
+        "E" => :flag,
+        "F" => :flag,
+        "o" => :flag,
+        "q" => :flag,
+        "s" => :flag,
+        "e" => :pattern,
+        "f" => :path,
+        "m" => :literal,
+        "A" => :literal,
+        "B" => :literal,
+        "C" => :literal
+      },
+      long: %{
+        "--regexp" => :pattern,
+        "--file" => :path,
+        "--color" => :literal,
+        "--include" => :literal,
+        "--exclude" => :literal,
+        "--recursive" => :flag,
+        "--line-number" => :flag,
+        "--ignore-case" => :flag,
+        "--fixed-strings" => :flag,
+        "--extended-regexp" => :flag,
+        "--word-regexp" => :flag,
+        "--invert-match" => :flag,
+        "--count" => :flag,
+        "--files-with-matches" => :flag,
+        "--files-without-match" => :flag
+      },
+      operands: :pattern_then_paths
+    },
+    # `--pre`, `--hostname-bin` (execute a program), `-L` / `--follow`
+    # (leave the workspace via symlinks) are absent on purpose.
+    "rg" => %{
+      short: %{
+        "n" => :flag,
+        "N" => :flag,
+        "i" => :flag,
+        "w" => :flag,
+        "x" => :flag,
+        "v" => :flag,
+        "c" => :flag,
+        "l" => :flag,
+        "F" => :flag,
+        "S" => :flag,
+        "s" => :flag,
+        "u" => :flag,
+        "H" => :flag,
+        "e" => :pattern,
+        "f" => :path,
+        "m" => :literal,
+        "A" => :literal,
+        "B" => :literal,
+        "C" => :literal,
+        "g" => :literal,
+        "t" => :literal
+      },
+      long: %{
+        "--version" => :flag,
+        "--regexp" => :pattern,
+        "--file" => :path,
+        "--glob" => :literal,
+        "--type" => :literal,
+        "--color" => :literal,
+        "--max-count" => :literal,
+        "--no-heading" => :flag,
+        "--line-number" => :flag,
+        "--hidden" => :flag,
+        "--fixed-strings" => :flag,
+        "--ignore-case" => :flag,
+        "--word-regexp" => :flag,
+        "--invert-match" => :flag,
+        "--count" => :flag,
+        "--files-with-matches" => :flag
+      },
+      operands: :pattern_then_paths
+    },
+    # `-c` / `--config-env` (name a program via config), `--git-dir`,
+    # `--work-tree`, `--exec-path`, `--namespace` are absent on purpose.
+    "git" => %{
+      short: %{"C" => :path},
+      long: %{"--no-pager" => :flag},
+      operands: {:subcommand, @git_subcommands}
+    }
   }
+
+  # The grammar keys ARE the allow-list. Fail the build if they drift.
+  if Enum.sort(Map.keys(@program_grammar)) != Enum.sort(@allowed_shell_commands) do
+    raise "@program_grammar and @allowed_shell_commands drifted"
+  end
+
+  if Enum.sort(Map.keys(@git_subcommands)) != Enum.sort(@allowed_git_subcommands) do
+    raise "@git_subcommands and @allowed_git_subcommands drifted"
+  end
 
   @forbidden_shell_syntax [
     ~r/[;&|$`\\'"(){}\[\]*?<>~!]/,
@@ -185,8 +367,7 @@ defmodule MrEric.Tools.Policy do
 
     with {:ok, command} <- normalize_command(command),
          :ok <- ensure_safe_command(command),
-         :ok <- ensure_program_options_allowed(command),
-         :ok <- ensure_command_paths_allowed(command, opts) do
+         :ok <- ensure_argv_allowed(command, opts) do
       {:ok,
        %{
          approval_required?: true,
@@ -333,60 +514,164 @@ defmodule MrEric.Tools.Policy do
   end
 
   defp ensure_allowed_shell_command(command) do
-    with {:ok, [program | args]} <- command_argv(command) do
+    with {:ok, [program | _args]} <- command_argv(command) do
       cond do
         # The allow-listed string must be the string that gets resolved and
         # executed, so a path-shaped program token is rejected outright rather
         # than reduced to its basename.
-        String.contains?(program, "/") ->
-          {:error, :dangerous_command}
-
-        program not in @allowed_shell_commands ->
-          {:error, :dangerous_command}
-
-        program == "git" and git_subcommand(args) not in @allowed_git_subcommands ->
-          {:error, :dangerous_command}
-
-        true ->
-          :ok
+        String.contains?(program, "/") -> {:error, :dangerous_command}
+        program not in @allowed_shell_commands -> {:error, :dangerous_command}
+        true -> :ok
       end
     end
   end
 
-  defp git_subcommand(["-C", _path | rest]), do: git_subcommand(rest)
-  defp git_subcommand(["--no-pager" | rest]), do: git_subcommand(rest)
-
-  defp git_subcommand([arg | rest]) when is_binary(arg) do
-    if String.starts_with?(arg, "-"), do: git_subcommand(rest), else: arg
+  # Parses the argv vector against the program's grammar. This is the only
+  # place a command token becomes a path: a token is resolved because the
+  # grammar says its option takes a path, never because it happens to contain
+  # a "/". Unknown option or unknown program => refusal, by absence.
+  defp ensure_argv_allowed(command, opts) do
+    with {:ok, [program | args]} <- command_argv(command),
+         {:ok, grammar} <- fetch_grammar(program) do
+      walk_argv(args, grammar, opts, false)
+    end
   end
 
-  defp git_subcommand([]), do: nil
+  defp fetch_grammar(program) do
+    case Map.fetch(@program_grammar, program) do
+      {:ok, grammar} -> {:ok, grammar}
+      :error -> {:error, :dangerous_command}
+    end
+  end
 
-  # Runs before the path check so a mutating option is reported as
-  # :dangerous_command rather than as whatever its argument happens to resolve to.
-  defp ensure_program_options_allowed(command) do
-    with {:ok, [program | args]} <- command_argv(command) do
-      denied =
-        Map.get(@mutating_options, program, []) ++
-          Map.get(@root_repointing_options, program, [])
+  # `pattern_seen?` tracks whether a :pattern already arrived (via -e/--regexp
+  # or a bare operand), which decides how the next bare operand is classified.
+  defp walk_argv([], _grammar, _opts, _pattern_seen?), do: :ok
 
+  defp walk_argv(["--" | rest], grammar, opts, pattern_seen?),
+    do: walk_operands(rest, grammar, opts, pattern_seen?)
 
-      if Enum.any?(args, fn arg -> Enum.any?(denied, &Regex.match?(&1, arg)) end) do
+  # A bare "-" means stdin.
+  defp walk_argv(["-" | rest], grammar, opts, pattern_seen?),
+    do: walk_argv(rest, grammar, opts, pattern_seen?)
+
+  defp walk_argv(["--" <> _ = token | rest], grammar, opts, pattern_seen?) do
+    {name, attached} =
+      case String.split(token, "=", parts: 2) do
+        [name] -> {name, :none}
+        [name, value] -> {name, value}
+      end
+
+    case Map.fetch(grammar.long, name) do
+      :error ->
         {:error, :dangerous_command}
-      else
-        :ok
-      end
+
+      {:ok, :flag} ->
+        if attached == :none,
+          do: walk_argv(rest, grammar, opts, pattern_seen?),
+          else: {:error, :dangerous_command}
+
+      {:ok, kind} ->
+        consume_value(kind, attached, rest, grammar, opts, pattern_seen?)
     end
   end
 
-  defp ensure_command_paths_allowed(command, opts) do
-    with {:ok, tokens} <- command_argv(command) do
-      Enum.reduce_while(tokens, :ok, fn token, :ok ->
-        case validate_command_token_path(token, opts) do
-          :ok -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
+  defp walk_argv(["-" <> bundle | rest], grammar, opts, pattern_seen?),
+    do: walk_bundle(String.graphemes(bundle), rest, grammar, opts, pattern_seen?)
+
+  # `git <subcommand>`: the subcommand owns the rest of the vector, under its
+  # own grammar. Must precede the generic operand clause.
+  defp walk_argv([operand | rest], %{operands: {:subcommand, table}}, opts, _pattern_seen?) do
+    case Map.fetch(table, operand) do
+      :error -> {:error, :dangerous_command}
+      {:ok, sub_grammar} -> walk_argv(rest, sub_grammar, opts, false)
+    end
+  end
+
+  defp walk_argv([operand | rest], grammar, opts, pattern_seen?) do
+    case classify_operand(operand, grammar, opts, pattern_seen?) do
+      {:ok, seen?} -> walk_argv(rest, grammar, opts, seen?)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # After `--`, every remaining token is an operand.
+  defp walk_operands([], _grammar, _opts, _pattern_seen?), do: :ok
+
+  defp walk_operands([operand | rest], %{operands: {:subcommand, table}}, opts, _seen?) do
+    case Map.fetch(table, operand) do
+      :error -> {:error, :dangerous_command}
+      {:ok, sub_grammar} -> walk_operands(rest, sub_grammar, opts, false)
+    end
+  end
+
+  defp walk_operands([operand | rest], grammar, opts, pattern_seen?) do
+    case classify_operand(operand, grammar, opts, pattern_seen?) do
+      {:ok, seen?} -> walk_operands(rest, grammar, opts, seen?)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp walk_bundle([], rest, grammar, opts, pattern_seen?),
+    do: walk_argv(rest, grammar, opts, pattern_seen?)
+
+  defp walk_bundle([char | more], rest, grammar, opts, pattern_seen?) do
+    case Map.fetch(grammar.short, char) do
+      :error ->
+        {:error, :dangerous_command}
+
+      {:ok, :flag} ->
+        walk_bundle(more, rest, grammar, opts, pattern_seen?)
+
+      {:ok, kind} ->
+        attached = if more == [], do: :none, else: Enum.join(more)
+        consume_value(kind, attached, rest, grammar, opts, pattern_seen?)
+    end
+  end
+
+  # The value is whatever was attached to the option, else the next token.
+  defp consume_value(kind, :none, [], _grammar, _opts, _pattern_seen?)
+       when kind in [:path, :pattern, :literal],
+       do: {:error, :invalid_args}
+
+  defp consume_value(kind, :none, [value | rest], grammar, opts, pattern_seen?) do
+    with :ok <- classify_value(kind, value, opts) do
+      walk_argv(rest, grammar, opts, pattern_seen? or kind == :pattern)
+    end
+  end
+
+  defp consume_value(kind, value, rest, grammar, opts, pattern_seen?) do
+    with :ok <- classify_value(kind, value, opts) do
+      walk_argv(rest, grammar, opts, pattern_seen? or kind == :pattern)
+    end
+  end
+
+  defp classify_value(:path, value, opts) do
+    case resolve_workspace_path(value, opts) do
+      {:ok, _path} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A pattern is a regex and is never opened; a literal is enumerated per
+  # option precisely because leaving its value unchecked is safe there.
+  defp classify_value(:pattern, _value, _opts), do: :ok
+  defp classify_value(:literal, _value, _opts), do: :ok
+
+  defp classify_operand(_operand, %{operands: :none}, _opts, _seen?),
+    do: {:error, :dangerous_command}
+
+  defp classify_operand(operand, %{operands: :paths}, opts, seen?) do
+    with :ok <- classify_value(:path, operand, opts), do: {:ok, seen?}
+  end
+
+  # The first bare operand is the pattern unless one already arrived via
+  # -e/--regexp; everything after it is a path.
+  defp classify_operand(operand, %{operands: :pattern_then_paths}, opts, seen?) do
+    if seen? do
+      with :ok <- classify_value(:path, operand, opts), do: {:ok, true}
+    else
+      {:ok, true}
     end
   end
 
@@ -403,69 +688,4 @@ defmodule MrEric.Tools.Policy do
     |> String.trim_trailing(",;")
   end
 
-  defp validate_command_token_path(token, opts) do
-    case option_value_paths(token) do
-      [] ->
-        validate_plain_token_path(token, opts)
-
-      values ->
-        Enum.reduce_while(values, :ok, fn value, :ok ->
-          case validate_plain_token_path(value, opts) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-    end
-  end
-
-  # A path can hide inside an option token: `-fPATTERNS`, `--file=PATTERNS`.
-  # The token as a whole expands to a harmless in-workspace string
-  # (`<workspace>/--file=..`), so it must be taken apart before
-  # `validate_plain_token_path/2` sees it. Clause order matters: the `--`
-  # clause must shadow the single-letter one.
-  defp option_value_paths("--" <> rest) do
-    case String.split(rest, "=", parts: 2) do
-      [_name, value] when value != "" -> [value]
-      _no_value -> []
-    end
-  end
-
-  defp option_value_paths(<<?-, letter, value::binary>>) when value != "" do
-    if letter in ?a..?z or letter in ?A..?Z, do: [value], else: []
-  end
-
-  defp option_value_paths(_token), do: []
-
-  defp validate_plain_token_path(token, opts) do
-    cond do
-      String.contains?(token, "://") ->
-        :ok
-
-      path = embedded_absolute_path(token) ->
-        case resolve_workspace_path(path, opts) do
-          {:ok, _path} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      token == ".." or String.starts_with?(token, "../") or String.contains?(token, "/../") ->
-        {:error, :outside_workspace}
-
-      String.starts_with?(token, "/") or String.starts_with?(token, "./") or
-        String.contains?(token, "/") or secret_path?(token) ->
-        case resolve_workspace_path(token, opts) do
-          {:ok, _path} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      true ->
-        :ok
-    end
-  end
-
-  defp embedded_absolute_path(token) do
-    case Regex.run(~r/(?:^|=)(\/[^=\s]+)/, token) do
-      [_, path] -> path
-      _no_path -> nil
-    end
-  end
 end

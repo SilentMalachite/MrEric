@@ -219,26 +219,131 @@ defmodule MrEric.Tools.PolicyTest do
     end
   end
 
-  describe "mutating options (Spec C-1)" do
-    test "rejects sed -i however it is spelled or ordered", %{workspace: workspace} do
+  describe "sed is off the allow-list (Spec C-1 rev 2)" do
+    # sed is a scripting language: its scripts can write (`w`), read (`r`) and,
+    # on GNU sed, execute (`e`), and `-f` loads a script from a file. Bounding
+    # it means parsing sed scripts, so it is refused outright. grep/rg cover
+    # the read-oriented use cases the allow-list exists for.
+    test "every sed form is refused, bundled -i included", %{workspace: workspace} do
       for command <- [
             "sed -E -i.bak s/foo/bar/ README.md",
+            "sed -Ei.bak s/foo/bar/ README.md",
+            "sed -ni.bak s/foo/bar/p README.md",
             "sed --in-place=.bak s/foo/bar/ README.md",
             "sed -i.bak s/foo/bar/ README.md",
-            "sed -n -i s/foo/bar/ README.md"
+            "sed -n -i s/foo/bar/ README.md",
+            "sed -n 1,5p README.md",
+            "sed -nf../outside/script README.md"
           ] do
         assert {:error, :dangerous_command} =
                  Policy.authorize(:shell_command, %{command: command},
                    workspace_root: workspace
-                 )
+                 ),
+               "expected #{command} to be refused"
+      end
+    end
+  end
+
+  describe "unknown options and value kinds (Spec C-1 rev 2)" do
+    test "an option the grammar does not name is refused", %{workspace: workspace} do
+      for command <- [
+            "rg --pre=./hook needle f.txt",
+            "rg --hostname-bin=./hook needle f.txt",
+            "rg -L needle .",
+            "rg --follow needle .",
+            "ls -LR .",
+            "git --config-env=core.pager=X status",
+            "git diff --output=target.txt",
+            "cat --show-all note.txt",
+            "grep --devices=read needle f.txt"
+          ] do
+        assert {:error, :dangerous_command} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be refused"
       end
     end
 
-    test "still allows read-only sed", %{workspace: workspace} do
-      assert {:ok, %{approval_required?: true}} =
-               Policy.authorize(:shell_command, %{command: "sed -n 1,5p README.md"},
+    test "a bundled short option resolves its real value", %{workspace: workspace} do
+      for command <- [
+            "grep -nf../outside/patterns f.txt",
+            "grep -f../outside/patterns f.txt",
+            "grep -f ../outside/patterns f.txt",
+            "grep --file=../outside/patterns f.txt",
+            "rg -nf../outside/patterns f.txt"
+          ] do
+        assert {:error, :outside_workspace} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be refused"
+      end
+    end
+
+    test "a value-taking option with no value is invalid_args", %{workspace: workspace} do
+      assert {:error, :invalid_args} =
+               Policy.authorize(:shell_command, %{command: "grep -f"},
                  workspace_root: workspace
                )
+    end
+
+    test "a pattern value is not resolved as a path", %{workspace: workspace} do
+      for command <- [
+            "grep -e/etc/passwd f.txt",
+            "grep --regexp=/etc/passwd f.txt",
+            "grep -- -f../needle f.txt"
+          ] do
+        assert {:ok, %{approval_required?: true}} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be allowed"
+      end
+    end
+
+    test "an operand after the pattern is still a path", %{workspace: workspace} do
+      assert {:error, :outside_workspace} =
+               Policy.authorize(:shell_command, %{command: "grep needle /etc/passwd"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "operands: :none rejects any operand", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "pwd -P"}, workspace_root: workspace)
+
+      assert {:error, :dangerous_command} =
+               Policy.authorize(:shell_command, %{command: "pwd extra"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "the common read-only forms are still allowed", %{workspace: workspace} do
+      File.mkdir_p!(Path.join(workspace, "sub"))
+
+      for command <- [
+            "pwd",
+            "pwd -P",
+            "ls -la",
+            "ls --color=auto",
+            "cat note.txt",
+            "cat -n note.txt",
+            "grep -rn needle lib",
+            "rg --version",
+            "rg -n needle .",
+            "git status --short",
+            "git -C sub status --short",
+            "git diff --stat",
+            "git log --oneline",
+            "git show --stat"
+          ] do
+        assert {:ok, %{approval_required?: true}} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be allowed"
+      end
     end
   end
 
