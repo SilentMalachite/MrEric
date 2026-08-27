@@ -211,10 +211,63 @@ defmodule MrEric.Evals.Runner do
 
     File.mkdir_p!(workspace)
     File.write!(Path.join(workspace, "note.txt"), "old\n")
+    seed_scenario_files(workspace, eval_case.scenario)
     System.cmd("git", ["init"], cd: workspace, stderr_to_stdout: true)
     System.cmd("git", ["add", "note.txt"], cd: workspace, stderr_to_stdout: true)
     workspace
   end
+
+  # `rag_default_index` drives the real `MrEric.RAG.Index.build/1`, so the
+  # workspace has to contain both something the index must find and everything
+  # Spec A says it must not. Every secret here is a fixed dummy value shaped to
+  # match `SecretChecker`'s patterns.
+  #
+  # What this case actually proves is that the *marker* reached the planner
+  # through the real index: `FakeProvider` fails the planner outright when it
+  # does not, so `expected_status` is the load-bearing assertion. The secret
+  # files are a guard, not an exercised assertion, and it is worth knowing why
+  # rather than assuming otherwise. Each of them is excluded by several
+  # independent rules -- `.env` by extension *and* by name *and* by
+  # `Policy.secret_path?/1`; `server.key` by ignored extension *and* by
+  # `priv/cert`; `dev.secret.exs` by `config` *and* by
+  # `Policy.resolve_workspace_path/2`, which rejects any path matching
+  # /secret|credential|token/ -- so removing any single rule surfaces nothing.
+  # And even a secret that did reach the planner stage would not fail on
+  # `:secret_leak`: `Events.normalize_event/2` runs `redact_secrets/1` over
+  # every binary in a `stage_completed` payload, so `Run.stages` holds the
+  # masked text long before `SecretChecker` walks `actual`.
+  defp seed_scenario_files(workspace, "rag_default_index") do
+    File.write!(
+      Path.join(workspace, "README.md"),
+      """
+      MrEric notes: phase9-default-index-marker
+      The planner should see this file and nothing under config or priv/cert.
+      """
+    )
+
+    File.write!(
+      Path.join(workspace, ".env"),
+      "OPENAI_API_KEY=sk-phase9dummysecret123456789\n"
+    )
+
+    File.mkdir_p!(Path.join(workspace, "config"))
+
+    File.write!(
+      Path.join(workspace, "config/dev.secret.exs"),
+      ~s(import Config\nconfig :mr_eric, secret: "sk-phase9dummysecret123456789"\n)
+    )
+
+    File.mkdir_p!(Path.join(workspace, "priv/cert"))
+
+    File.write!(
+      Path.join(workspace, "priv/cert/server.key"),
+      "-----BEGIN RSA PRIVATE KEY-----\nphase9dummy\n-----END RSA PRIVATE KEY-----\n"
+    )
+
+    :ok
+  end
+
+  defp seed_scenario_files(_workspace, _scenario), do: :ok
 
   defp role_value(nil), do: nil
   defp role_value(role), do: role

@@ -126,6 +126,17 @@
     "expected_no_secret_leak": true
   },
   {
+    "name": "rag_default_index",
+    "task": "Summarize the project structure",
+    "scenario": "rag_default_index",
+    "requires": ["rag"],
+    "expected_status": "completed",
+    "expected_final_contains": ["default index"],
+    "expected_events": ["run_completed"],
+    "forbidden_events": ["run_failed", "rag_failed"],
+    "expected_no_secret_leak": true
+  },
+  {
     "name": "mcp_unavailable_is_safe",
     "task": "Classify unavailable MCP extension points safely",
     "scenario": "mcp_unavailable_is_safe",

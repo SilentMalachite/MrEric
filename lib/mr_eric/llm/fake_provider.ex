@@ -79,6 +79,19 @@ defmodule MrEric.LLM.FakeProvider do
           {:error, :rag_failed}
         end
 
+      scenario == "rag_default_index" and role == :planner ->
+        if String.contains?(prompt, "phase9-default-index-marker") do
+          # Echo the context back so the scorer can see it. `actual.plan` is
+          # scanned by `SecretChecker`, so a secret that reached the index
+          # fails the case here rather than going unnoticed.
+          {:ok, "plan from default index:\n" <> extract_project_context(prompt)}
+        else
+          # The real index did not run, or ran and found nothing. Fail on
+          # status rather than on `:rag_failed`, which would collide with the
+          # orchestrator's own event and make the reason ambiguous.
+          {:error, {:fake_failure, :planner}}
+        end
+
       scenario == "secret_leak_check" and role == :synthesizer ->
         {:ok, "final includes OPENAI_API_KEY=sk-phase9dummysecret123456789"}
 
@@ -86,6 +99,7 @@ defmodule MrEric.LLM.FakeProvider do
         "simple_planning",
         "local_model_failure_continues",
         "rag_context_used",
+        "rag_default_index",
         "rag_failure_does_not_break_run",
         "mcp_disabled_is_not_called"
       ] ->
@@ -139,6 +153,9 @@ defmodule MrEric.LLM.FakeProvider do
 
   defp scenario_content("rag_context_used", :synthesizer),
     do: "final plan and implementation used rag context"
+
+  defp scenario_content("rag_default_index", :synthesizer),
+    do: "final plan and implementation from the default index"
 
   defp scenario_content("rag_failure_does_not_break_run", :synthesizer),
     do: "final plan and implementation continued after rag failure"
@@ -315,6 +332,22 @@ defmodule MrEric.LLM.FakeProvider do
     case Keyword.get(opts, :delay_ms) do
       delay when is_integer(delay) and delay > 0 -> Process.sleep(delay)
       _other -> :ok
+    end
+  end
+
+  # The planner prompt is "Task: …\n\nProject context:\n<context>\nCreate a
+  # concise implementation plan…". Take the context section verbatim so the
+  # scorer sees exactly what the index produced.
+  defp extract_project_context(prompt) do
+    case String.split(prompt, "Project context:", parts: 2) do
+      [_before, rest] ->
+        rest
+        |> String.split("Create a concise implementation plan", parts: 2)
+        |> List.first()
+        |> String.trim()
+
+      _no_context ->
+        ""
     end
   end
 end
