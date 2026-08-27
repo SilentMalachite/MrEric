@@ -162,10 +162,61 @@ defmodule MrEric.Tools.PolicyTest do
                workspace_root: workspace
              )
 
-    assert {:error, :outside_workspace} =
+    # Spec C-1 delta: still refused, but now as an option rather than as a path.
+    # `ensure_program_options_allowed/1` runs ahead of the path check so that
+    # --git-dir is rejected whether or not its argument happens to escape.
+    assert {:error, :dangerous_command} =
              Policy.authorize(:shell_command, %{command: "git --git-dir=/tmp/.git status"},
                workspace_root: workspace
              )
+  end
+
+  describe "root-repointing options and bare program names (Spec C-1)" do
+    test "rejects git options that re-point the repository", %{workspace: workspace} do
+      for command <- [
+            "git --git-dir=../store status --short",
+            "git --work-tree=../outside status --short",
+            "git -c core.fsmonitor=evil status",
+            "git --exec-path=../bin status"
+          ] do
+        assert {:error, :dangerous_command} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 )
+      end
+    end
+
+    test "still allows git -C, which Policy resolves as a separate token", %{
+      workspace: workspace
+    } do
+      File.mkdir_p!(Path.join(workspace, "sub"))
+
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "git -C sub status --short"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "still allows a plain git subcommand", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "git status --short"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "rejects a program token that is a path", %{workspace: workspace} do
+      for command <- ["./pwd", "tmp/pwd", "bin/git status"] do
+        assert {:error, :dangerous_command} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 )
+      end
+    end
+
+    test "still allows a bare program name", %{workspace: workspace} do
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "pwd"}, workspace_root: workspace)
+    end
   end
 
   describe "mutating options (Spec C-1)" do

@@ -548,11 +548,18 @@ Tighten the program token:
 
 `Path.basename/1` is dropped: with the `/` guard in front it can no longer differ from `program`, and keeping it would suggest a path is acceptable.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass, and expect one pre-existing assertion to move**
 
 Run: `mix test test/mr_eric/tools/policy_test.exs`
 
-Expected: PASS, all cases.
+Expected: the new cases PASS, and the pre-existing `test "rejects shell commands that reference paths outside the workspace"` FAILS on its third assertion:
+
+```
+git --git-dir=/tmp/.git status
+  was {:error, :outside_workspace}, is now {:error, :dangerous_command}
+```
+
+This is the Section 3 behaviour delta, not over-rejection — the command is refused either way, and the new reason is the accurate one because `ensure_program_options_allowed/1` runs ahead of the path check. Update that one assertion to `:dangerous_command` with a comment naming the spec, and leave the `cat /etc/passwd` and `cat ../secret.txt` assertions on `:outside_workspace`. If any *other* pre-existing case moves, stop — that is over-rejection and the implementation is wrong.
 
 - [ ] **Step 5: Confirm every end-to-end case is green**
 
@@ -571,14 +578,26 @@ Expected: PASS. The golden cases issue `shell_command` with `command: "pwd"`, a 
 
 - [ ] **Step 7: Confirm the frozen attributes really are frozen**
 
+A `git diff | grep <attribute-name>` does **not** work here: the new code carries comments that mention those attributes by name, and they match the grep. Extract the four definitions from both revisions and compare them instead:
+
 ```bash
-git diff main...HEAD -- lib/mr_eric/tools/policy.ex \
-  | grep -E '^[+-]' | grep -vE '^[+-]{3}' \
-  | grep -E 'allowed_shell_commands|allowed_git_subcommands|forbidden_shell_syntax|dangerous_command_patterns' \
-  || echo "frozen attributes untouched: OK"
+cat > /tmp/extract_attrs.py <<'PY'
+import sys, re, subprocess
+rev = sys.argv[1]
+src = subprocess.run(["git","show",rev+":lib/mr_eric/tools/policy.ex"],
+                     capture_output=True, text=True, check=True).stdout
+for name in ["allowed_shell_commands","allowed_git_subcommands",
+             "forbidden_shell_syntax","dangerous_command_patterns"]:
+    m = re.search(r"^  @"+name+r"\s.*?(?=\n\n)", src, re.S | re.M)
+    print("@"+name+" =>")
+    print(m.group(0) if m else "<<MISSING>>")
+PY
+python3 /tmp/extract_attrs.py main > /tmp/attrs_main.txt
+python3 /tmp/extract_attrs.py HEAD > /tmp/attrs_head.txt
+diff -u /tmp/attrs_main.txt /tmp/attrs_head.txt && echo "frozen attributes untouched: OK"
 ```
 
-Expected: `frozen attributes untouched: OK`. This is acceptance criterion 6.
+Expected: `frozen attributes untouched: OK`, and both files non-empty (36 lines each at the time of writing). Check the line count — if the extraction returns nothing, `diff` reports two empty files as identical and the check silently passes. This is acceptance criterion 6.
 
 - [ ] **Step 8: Commit**
 
@@ -641,7 +660,7 @@ Run all of these before declaring Spec C-1 done. Each maps to an acceptance crit
 | 1 | `mix test test/mr_eric/tools/shell_command_test.exs` | PASS — including the `File.read!` assertion in the `sed` case |
 | 2 | `mix test test/mr_eric/tools/policy_test.exs` | PASS — all bypass cases rejected, all over-rejection guards still `{:ok, ...}` |
 | 3 | `grep -n 'Path.basename(program)' lib/mr_eric/tools/policy.ex` | no output |
-| 4 | Task 4 Step 7's `git diff` grep | `frozen attributes untouched: OK` |
+| 4 | Task 4 Step 7's attribute extraction + `diff` | `frozen attributes untouched: OK`, both extracts non-empty |
 | 5 | `git status --short priv/evals/` then `mix mr_eric.evals` | no modified golden cases; evals PASS |
 | 6 | `mix test` | PASS |
 | 7 | `mix precommit` | PASS |

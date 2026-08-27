@@ -28,6 +28,21 @@ defmodule MrEric.Tools.Policy do
     "sed" => [~r/^-{1,2}i/, ~r/^--in-place/]
   }
 
+  # Options that change what the program considers its own root, or that can
+  # name another program to execute. `-C <path>` is deliberately absent: its
+  # argument is a separate token that ensure_command_paths_allowed/2 already
+  # resolves through Policy, and git_subcommand/1 already skips it. Rejecting
+  # `-c` while allowing `-C` is intentional; the test suite pins the asymmetry.
+  @root_repointing_options %{
+    "git" => [
+      ~r/^--git-dir(=|$)/,
+      ~r/^--work-tree(=|$)/,
+      ~r/^--exec-path(=|$)/,
+      ~r/^--namespace(=|$)/,
+      ~r/^-c$/
+    ]
+  }
+
   @forbidden_shell_syntax [
     ~r/[;&|$`\\'"(){}\[\]*?<>~!]/,
     ~r/\n/
@@ -319,9 +334,13 @@ defmodule MrEric.Tools.Policy do
 
   defp ensure_allowed_shell_command(command) do
     with {:ok, [program | args]} <- command_argv(command) do
-      program = Path.basename(program)
-
       cond do
+        # The allow-listed string must be the string that gets resolved and
+        # executed, so a path-shaped program token is rejected outright rather
+        # than reduced to its basename.
+        String.contains?(program, "/") ->
+          {:error, :dangerous_command}
+
         program not in @allowed_shell_commands ->
           {:error, :dangerous_command}
 
@@ -347,7 +366,10 @@ defmodule MrEric.Tools.Policy do
   # :dangerous_command rather than as whatever its argument happens to resolve to.
   defp ensure_program_options_allowed(command) do
     with {:ok, [program | args]} <- command_argv(command) do
-      denied = Map.get(@mutating_options, program, [])
+      denied =
+        Map.get(@mutating_options, program, []) ++
+          Map.get(@root_repointing_options, program, [])
+
 
       if Enum.any?(args, fn arg -> Enum.any?(denied, &Regex.match?(&1, arg)) end) do
         {:error, :dangerous_command}
