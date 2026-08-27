@@ -102,6 +102,26 @@ deterministic eval harness、session-bound run ownership、local-first provider 
   - `@allowed_shell_commands` は `Map.keys(@program_grammar)` とコンパイル時に一致を検査する。
   - `@forbidden_shell_syntax` / `@dangerous_command_patterns` は Spec C 時点からバイト一致で不変
     （first-pass の文字列フィルタとして維持）。
+  - grammar 実装後のレビューでさらに 5 件を修正した。いずれも実行して被害を確認済み。
+    - `-f` / `--file` が「pattern 供給済み」を立てず、最初の operand が正規表現扱いになって
+      パス検査を素通りしていた。`grep -f pat.txt /etc/passwd` が **`/etc/passwd` を読んだ**。
+      値種別 `:path_pattern_source` を追加。
+    - `--color` / `--untracked-files` は値が省略可能なのに必須値としてモデル化しており、
+      次の operand を未検査 literal として飲み込んでいた。`ls --color ..` が **workspace 外を列挙**、
+      `grep --color root /etc/passwd` が **`/etc/passwd` を読んだ**。値種別 `:literal_optional` を追加
+      （attached / `=` 形式でのみ束縛）。`ls --color` 単体の過剰拒否も同時に解消。
+    - `grep -R`（`--dereference-recursive`）が symlink を追って workspace 外へ出る。
+      `rg -L` / `ls -L` を除外した理由と同じなので削除（`-r` は維持）。
+    - grammar 全エントリを**テーブルから導出**して検証するテストを追加。従来は手書き 14 件 /
+      約 100 エントリで、上記 3 件はいずれも未カバー領域にあった。導入直後に死にエントリ
+      （`git status --branch` が凍結 deny-list の `\bbranch\b` に当たり到達不能）を検出。
+    - 削除済み関数を指すテストコメントを修正。
+  - **既知の受容ギャップ**: `secret_path?/1` はコマンドトークンとして現れたパスにしか効かず、
+    プログラム自身のディレクトリ走査には届かない。`cat .env` は拒否されるが
+    `grep -rn AKIA .` は同じバイト列を返す。`rg` 側は既定で hidden / gitignore を除外するため、
+    それを無効化する `--hidden` と `-u` / `--unrestricted` を grammar から削除して閉じた。
+    `grep -r` 側は `grep -rn needle lib` を潰せないため**受容**し、spec Section 4 に明記して
+    テストで両方向に固定した（`rg` は `.env` を読まない / `grep -r` は読む）。
 
 - tool 境界を hardening（Spec C、2026-08-27）。
   - 承認済み `shell_command` を `sh -lc` 経由から **argv 直実行**に変更。`Policy.command_argv/1` を

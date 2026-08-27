@@ -251,6 +251,25 @@ A pattern is never resolved as a path, `--` stops option parsing, and operand po
 
 ## Section 4 — What is *not* addressed, and why
 
+- **A recursive search can read a secret file *inside* the workspace.** `Policy.secret_path?/1`
+  only reaches paths that appear as command tokens; it has no reach into a program's own
+  directory walk. So `cat .env` is refused as `:secret_file` while `grep -rn AKIA .` returns
+  `./.env:1:AKIA...` — the same bytes. Measured, not theoretical.
+
+  Half of this is closed. `rg` skips hidden and gitignored files by default, and the two
+  options that defeat that default — `--hidden` and `-u` / `--unrestricted` — are absent from
+  the grammar, so `rg <term> .` does not read `.env`. They exist for no other purpose, so
+  removing them costs nothing.
+
+  The `grep -r` half is **accepted, not fixed.** `grep -rn needle lib` is the canonical use of
+  the allow-list and dropping `-r` would gut it; output post-filtering by `secret_path?/1` only
+  works for the spellings that prefix a filename (`-n`/`-H`) and silently misses `-h`, binary
+  matches, and `--null`. The exposure is bounded: it stays inside the workspace, so no
+  outside-workspace criterion is affected, and `shell_command` still requires per-call
+  approval. `test/mr_eric/tools/shell_command_test.exs` pins the asymmetry in both directions —
+  `rg` must not read `.env`, `grep -r` may — so a future change to the boundary shows up as a
+  test failure rather than as a silent drift.
+
 - **`grep -rn token .` → `:secret_file`.** A bare operand matching `secret|credential|token` is refused because `secret_path?/1` is applied to it. This predates Spec C entirely and the bare-operand path is unchanged here. It is over-rejection of a *search term*, and fixing it means narrowing `secret_path?/1` for operands, which touches RAG's use of the same function. Left alone deliberately; note it if it becomes annoying in practice.
 - **The residual `File.write!/2` race in `apply_patch`.** Unchanged from Spec C; Erlang exposes no `O_NOFOLLOW`.
 - **Process sandboxing.** A program that legitimately reads a workspace file can still do whatever its own binary permits.
@@ -281,11 +300,13 @@ Every row of the Revision 2 bypass table, re-run through `ShellCommand.run/2`, m
 3. `grep -nf<outside>`, `rg -nf<outside>`, and their unbundled, `--file=`, and separated-value forms → `:outside_workspace`.
 4. `git --config-env=…`, `git -c …`, `git --git-dir=…`, `git --work-tree=…`, `git diff --output=…` → `:dangerous_command`; the `--output` target is byte-identical.
 5. `rg -L …` and `ls -LR …` → `:dangerous_command`.
-6. Over-rejection is gone: `grep -e/etc/passwd f.txt`, `grep --regexp=/etc/passwd f.txt`, and `grep -- -f../needle f.txt` all return `{:ok, %{approval_required?: true}}`.
-7. The common forms still work: `pwd`, `pwd -P`, `ls -la`, `ls --color=auto`, `cat note.txt`, `cat -n note.txt`, `grep -rn needle lib`, `rg --version`, `git status --short`, `git -C sub status --short`, `git diff --stat`.
-8. `@allowed_shell_commands` is `~w(pwd ls cat grep rg git)` and equals `Map.keys(@program_grammar)`; `@forbidden_shell_syntax` and `@dangerous_command_patterns` are byte-identical to their Spec C state.
-9. The `shell_command` schema, the approval-request map, and every tool result shape are unchanged. `priv/evals/phase9_golden_cases.json` is unmodified and `mix mr_eric.evals` passes.
-10. `mix precommit` passes.
+6. `rg --hidden`, `rg -u`, `rg -uu`, `rg --unrestricted` → `:dangerous_command`, and
+   `rg <term> .` does not report a match inside `.env`.
+7. Over-rejection is gone: `grep -e/etc/passwd f.txt`, `grep --regexp=/etc/passwd f.txt`, and `grep -- -f../needle f.txt` all return `{:ok, %{approval_required?: true}}`.
+8. The common forms still work: `pwd`, `pwd -P`, `ls -la`, `ls --color=auto`, `cat note.txt`, `cat -n note.txt`, `grep -rn needle lib`, `rg --version`, `git status --short`, `git -C sub status --short`, `git diff --stat`.
+9. `@allowed_shell_commands` is `~w(pwd ls cat grep rg git)` and equals `Map.keys(@program_grammar)`; `@forbidden_shell_syntax` and `@dangerous_command_patterns` are byte-identical to their Spec C state.
+10. The `shell_command` schema, the approval-request map, and every tool result shape are unchanged. `priv/evals/phase9_golden_cases.json` is unmodified and `mix mr_eric.evals` passes.
+11. `mix precommit` passes.
 
 ## Out of scope (tracked elsewhere)
 
