@@ -4,6 +4,7 @@ defmodule MrEric.Runs.Trace do
   """
 
   alias MrEric.Errors
+  alias MrEric.Runs.Limits
 
   defstruct [
     :run_id,
@@ -16,6 +17,8 @@ defmodule MrEric.Runs.Trace do
     :status,
     :error_classification,
     metadata: %{},
+    chunk_counts: %{},
+    dropped_entries: 0,
     entries: []
   ]
 
@@ -35,6 +38,30 @@ defmodule MrEric.Runs.Trace do
 
   def record(nil, event, payload), do: new(nil, nil, nil, nil) |> record(event, payload)
 
+  # `stage_chunk` carries the streamed text, which `Run.stages[role].content`
+  # already accumulates. Keep one entry per role so the event still shows up in
+  # `events/1` and in golden `expected_events`, drop the duplicated body, and
+  # count the rest.
+  def record(%__MODULE__{} = trace, :stage_chunk, payload) do
+    payload = Errors.redact(payload)
+    role = Map.get(payload, :role)
+
+    if Map.has_key?(trace.chunk_counts, role) do
+      Map.update!(trace, :chunk_counts, &Map.update!(&1, role, fn count -> count + 1 end))
+    else
+      entry = %{
+        event: :stage_chunk,
+        payload: Map.delete(payload, :chunk),
+        occurred_at: DateTime.utc_now(),
+        error_classification: nil
+      }
+
+      trace
+      |> Map.update!(:chunk_counts, &Map.put(&1, role, 1))
+      |> append_entry(entry)
+    end
+  end
+
   def record(%__MODULE__{} = trace, event, payload) do
     now = DateTime.utc_now()
     payload = Errors.redact(payload)
@@ -47,7 +74,7 @@ defmodule MrEric.Runs.Trace do
     }
 
     trace
-    |> Map.update!(:entries, &(&1 ++ [entry]))
+    |> append_entry(entry)
     |> update_from_event(event, payload, now)
   end
 
@@ -63,6 +90,8 @@ defmodule MrEric.Runs.Trace do
       tool_denied?: has_event?(trace, :tool_denied),
       tool_rejected?: has_event?(trace, :tool_rejected),
       patch_applied?: patch_applied?(trace),
+      dropped_entries: trace.dropped_entries,
+      truncated?: trace.dropped_entries > 0,
       events: Enum.map(trace.entries, & &1.event)
     }
   end
@@ -130,10 +159,36 @@ defmodule MrEric.Runs.Trace do
 
   defp error_classification(_event, _payload), do: nil
 
+  # `entries ++ [entry]` is O(n), but the cap keeps n at or below
+  # `max_trace_entries`, which makes the whole run's cost irrelevant. Keeping
+  # the list in chronological order matters more: `MrEric.Evals.Scorer` reads
+  # `%Trace{entries: ...}` directly.
+  defp append_entry(trace, entry) do
+    max = Limits.fetch!(:max_trace_entries)
+    entries = trace.entries ++ [entry]
+    overflow = length(entries) - max
+
+    if overflow > 0 do
+      %{
+        trace
+        | entries: Enum.drop(entries, overflow),
+          dropped_entries: trace.dropped_entries + overflow
+      }
+    else
+      %{trace | entries: entries}
+    end
+  end
+
   defp event_counts(trace) do
-    trace.entries
-    |> Enum.frequencies_by(& &1.event)
-    |> Map.new()
+    counts =
+      trace.entries
+      |> Enum.frequencies_by(& &1.event)
+      |> Map.new()
+
+    case trace.chunk_counts |> Map.values() |> Enum.sum() do
+      0 -> counts
+      total -> Map.put(counts, :stage_chunk, total)
+    end
   end
 
   defp changed_files(trace) do
