@@ -138,7 +138,8 @@ defmodule MrEric.Runs.RunWorker do
       cancelled?: false,
       history_recorded?: false,
       reap_scheduled?: false,
-      pending_tool_approvals: %{}
+      pending_tool_approvals: %{},
+      tool_tasks: %{}
     }
 
     if auto_start do
@@ -350,8 +351,13 @@ defmodule MrEric.Runs.RunWorker do
     if Run.terminal?(state.run) do
       # The task is normally already finished; shutting it down defensively
       # keeps a stray orchestrator Task from outliving its worker, since a
-      # :normal exit does not take linked processes with it.
+      # :normal exit does not take linked processes with it. The tool tasks
+      # are already gone by construction -- put_run/2 kills them the moment
+      # the run goes terminal, and only a terminal run reaches here -- but
+      # they are linked to this worker for the same reason, so they get the
+      # same defence.
       shutdown_task(state.task)
+      state = shutdown_tool_tasks(state)
       {:stop, :normal, state}
     else
       # A terminal run can no longer be put back to a live status through the
@@ -391,6 +397,26 @@ defmodule MrEric.Runs.RunWorker do
 
       {:noreply, state}
     end
+  end
+
+  # Tool execution runs in its own task precisely so these two clauses exist:
+  # while a tool is in flight the worker is still in its receive loop, so
+  # :hard_deadline, :reap and cancel/2 are processed on time. `System.cmd/3`
+  # has no timeout, so an approved `shell_command` blocking the worker itself
+  # would have no bound at all.
+  @impl true
+  def handle_info({ref, result}, %{tool_tasks: tool_tasks} = state)
+      when is_map_key(tool_tasks, ref) do
+    Process.demonitor(ref, [:flush])
+    {entry, state} = pop_in(state.tool_tasks[ref])
+    {:noreply, apply_tool_result(entry, result, state)}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{tool_tasks: tool_tasks} = state)
+      when is_map_key(tool_tasks, ref) do
+    {entry, state} = pop_in(state.tool_tasks[ref])
+    {:noreply, apply_tool_result(entry, {:error, reason}, state)}
   end
 
   @impl true
@@ -437,6 +463,14 @@ defmodule MrEric.Runs.RunWorker do
 
   @impl true
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  # A reply from a tool task that was shut down when the run terminalised.
+  # `Task.shutdown/2` flushes the task's reply, so this is only reached by a
+  # reply that was already in the mailbox ahead of the shutdown.
+  @impl true
+  def handle_info({ref, _result}, state) when is_reference(ref) do
     {:noreply, state}
   end
 
@@ -495,12 +529,36 @@ defmodule MrEric.Runs.RunWorker do
   defp shutdown_task(task), do: Task.shutdown(task, :brutal_kill)
 
   # Every write of state.run goes through here, so "terminal implies a
-  # scheduled stop" holds by construction rather than by remembering to call
-  # the scheduler at each of the four terminal sites.
+  # scheduled stop, and no tool still running" holds by construction rather
+  # than by remembering to call both at each of the four terminal sites.
   defp put_run(state, %Run{} = run) do
     state
     |> Map.put(:run, run)
     |> maybe_schedule_reap()
+    |> maybe_shutdown_tool_tasks()
+  end
+
+  # A tool outliving its run is not just a stray process: `System.cmd/3` blocks
+  # a whole scheduler-bound OS process, and there is no worker left to receive
+  # what it produces.
+  defp maybe_shutdown_tool_tasks(%{tool_tasks: tool_tasks} = state)
+       when map_size(tool_tasks) == 0,
+       do: state
+
+  defp maybe_shutdown_tool_tasks(state) do
+    if Run.terminal?(state.run) do
+      shutdown_tool_tasks(state)
+    else
+      state
+    end
+  end
+
+  defp shutdown_tool_tasks(state) do
+    Enum.each(state.tool_tasks, fn {_ref, %{task: task}} ->
+      Task.shutdown(task, :brutal_kill)
+    end)
+
+    %{state | tool_tasks: %{}}
   end
 
   defp maybe_schedule_reap(%{reap_scheduled?: true} = state), do: state
@@ -586,56 +644,83 @@ defmodule MrEric.Runs.RunWorker do
     approval_id = Map.get(payload, :approval_id) || Map.get(payload, "approval_id")
     opts = tool_opts(state, tool_call_id, approval_id)
 
-    case Executor.request_tool(tool, args, reason, opts) do
-      {:ok, result} ->
-        request =
-          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
+    request =
+      %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
+      |> put_risk_level()
+      |> put_reply_to(reply_to)
 
-        state
-        |> broadcast_tool_started(request)
-        |> broadcast_tool_completed(request, result)
+    executor = executor(state)
 
-      {:approval_required, request} ->
-        request =
-          request
-          |> Map.put(:role, role)
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
-
-        state =
-          state
-          |> broadcast_and_apply(:tool_approval_requested, public_tool_payload(request))
-
-        schedule_approval_expiry(request)
-
-        put_in(state.pending_tool_approvals[request.approval_id], request)
-
-      {:error, reason} ->
-        request =
-          %{tool: tool, args: args, tool_call_id: tool_call_id, role: role}
-          |> put_risk_level()
-          |> put_reply_to(reply_to)
-
-        broadcast_tool_denied(state, request, reason)
-    end
+    start_tool_task(state, {:request_tool, request, role, reply_to}, fn ->
+      executor.request_tool(tool, args, reason, opts)
+    end)
   end
 
   defp prepare_tool_call(_payload, state), do: state
 
   defp execute_tool_request(request, state) do
-    state
-    |> broadcast_tool_started(request)
-    |> do_execute_tool_request(request)
+    state = broadcast_tool_started(state, request)
+
+    executor = executor(state)
+    opts = tool_opts(state, request.tool_call_id, nil)
+
+    start_tool_task(state, {:execute_approved, request}, fn ->
+      executor.execute_approved(request, opts)
+    end)
   end
 
-  defp do_execute_tool_request(state, request) do
-    case Executor.execute_approved(request, tool_opts(state, request.tool_call_id, nil)) do
-      {:ok, result} -> broadcast_tool_completed(state, request, result)
+  # `Task.async/1` links, and the worker traps exits, so a tool that raises
+  # arrives here as a :DOWN rather than taking the worker with it.
+  defp start_tool_task(state, kind, fun) do
+    task = Task.async(fun)
+    put_in(state.tool_tasks[task.ref], %{task: task, kind: kind})
+  end
+
+  # Defence in depth against the one ordering `put_run/2`'s shutdown cannot
+  # reach: a reply that was already in the mailbox when the run terminalised.
+  # A terminal run's outcome is final, and a tool broadcast would put it back
+  # to a live status through `Run.do_apply_event/3`.
+  defp apply_tool_result(entry, result, state) do
+    if state.cancelled? or Run.terminal?(state.run) do
+      state
+    else
+      do_apply_tool_result(entry.kind, result, state)
+    end
+  end
+
+  defp do_apply_tool_result({:request_tool, request, role, reply_to}, result, state) do
+    case result do
+      {:ok, tool_result} ->
+        state
+        |> broadcast_tool_started(request)
+        |> broadcast_tool_completed(request, tool_result)
+
+      {:approval_required, approval} ->
+        approval =
+          approval
+          |> Map.put(:role, role)
+          |> put_risk_level()
+          |> put_reply_to(reply_to)
+
+        state = broadcast_and_apply(state, :tool_approval_requested, public_tool_payload(approval))
+
+        schedule_approval_expiry(approval)
+
+        put_in(state.pending_tool_approvals[approval.approval_id], approval)
+
+      {:error, reason} ->
+        broadcast_tool_denied(state, request, reason)
+    end
+  end
+
+  defp do_apply_tool_result({:execute_approved, request}, result, state) do
+    case result do
+      {:ok, tool_result} -> broadcast_tool_completed(state, request, tool_result)
       {:error, reason} -> broadcast_tool_failed(state, request, reason)
     end
   end
+
+  defp executor(state), do: Keyword.get(state.opts, :executor_module, Executor)
 
   defp broadcast_tool_started(state, request) do
     broadcast_and_apply(state, :tool_started, tool_event_payload(request))

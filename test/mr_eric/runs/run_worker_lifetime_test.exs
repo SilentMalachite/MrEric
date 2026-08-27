@@ -11,6 +11,37 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     def stream(_task, _pid, _opts), do: Process.sleep(:infinity)
   end
 
+  # Stands in for a tool that never returns -- `System.cmd/3` has no timeout,
+  # so an approved `shell_command` really can hang for as long as the child
+  # process does. The point of the stub is that the block happens *inside the
+  # executor call*, which is where the real one blocks too.
+  defmodule BlockingExecutor do
+    @moduledoc false
+    def request_tool(_tool, _args, _reason, opts) do
+      {:approval_required,
+       %{
+         tool: :shell_command,
+         args: %{"command" => "ls"},
+         approval_id: "approval-blocking-#{System.unique_integer([:positive])}",
+         tool_call_id: Keyword.get(opts, :tool_call_id),
+         requested_at: DateTime.utc_now(),
+         expires_at: DateTime.add(DateTime.utc_now(), 600, :second)
+       }}
+    end
+
+    def execute_approved(_request, _opts), do: Process.sleep(:infinity)
+  end
+
+  # The unapproved path blocks in the same place: `Executor.request_tool/4`
+  # runs read-only tools (`git_diff`, `file_read`) to completion before it
+  # returns.
+  defmodule BlockingRequestExecutor do
+    @moduledoc false
+    def request_tool(_tool, _args, _reason, _opts), do: Process.sleep(:infinity)
+    def execute_approved(_request, _opts), do: Process.sleep(:infinity)
+  end
+
+
   defp start_worker(opts) do
     run =
       Run.new("lifetime",
@@ -37,6 +68,42 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
   # rather than merely waiting for it, so they trade the 30 ms window the other
   # deadline tests use for a 300 ms one.
   @wide_deadline_opts [max_total_runtime_ms: 200, hard_deadline_grace_ms: 100]
+
+  defp start_blocked_on_approved_tool(run_id, opts) do
+    run = Run.new("stuck in a tool", owner_id: "lifetime-owner", id: run_id)
+    :ok = Runs.subscribe(run_id)
+
+    {:ok, pid} =
+      RunWorker.start_link(
+        run: run,
+        opts: [orchestrator_module: IdleOrchestrator, executor_module: BlockingExecutor] ++ opts,
+        auto_start: true,
+        name: nil
+      )
+
+    assert_receive {:run_started, %{run_id: ^run_id}}, @wait_ms
+
+    send(
+      pid,
+      {:tool_requested, %{tool: :shell_command, input: %{"command" => "ls"}, role: :planner}}
+    )
+
+    assert_receive {:tool_approval_requested, %{run_id: ^run_id, approval_id: approval_id}},
+                   @wait_ms
+
+    assert :ok = RunWorker.approve_tool(pid, approval_id, "lifetime-owner")
+
+    pid
+  end
+
+  defp tool_task_refs(pid), do: pid |> :sys.get_state() |> Map.fetch!(:tool_tasks) |> Map.keys()
+
+  defp tool_task_pids(pid) do
+    pid
+    |> :sys.get_state()
+    |> Map.fetch!(:tool_tasks)
+    |> Enum.map(fn {_ref, %{task: task}} -> task.pid end)
+  end
 
   test "stops the worker after a completed run's grace period" do
     {_run, pid} = start_worker(@reap_opts)
@@ -452,5 +519,124 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
       |> Enum.sort()
 
     assert reviving == Enum.sort(RunWorker.reviving_events())
+  end
+
+  # Every other deadline test above uses IdleOrchestrator, whose stream/3 sleeps
+  # in a *task* -- the worker's own mailbox stays empty, so :hard_deadline is
+  # always processed promptly. The tool broker is the one path that blocks the
+  # worker process itself, and `System.cmd/3` has no timeout, so nothing bounds
+  # how long it blocks for.
+  describe "a tool that never returns" do
+    test "does not stop the absolute deadline from terminalising the run" do
+      run_id = "run-deadline-tool-#{System.unique_integer([:positive])}"
+
+      start_blocked_on_approved_tool(
+        run_id,
+        @wide_deadline_opts ++ [terminal_run_ttl_ms: 5_000, skip_history: true]
+      )
+
+      assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, @wait_ms
+      assert message =~ "maximum lifetime"
+    end
+
+    test "does not stop the absolute deadline on the unapproved path either" do
+      run_id = "run-deadline-request-#{System.unique_integer([:positive])}"
+      run = Run.new("stuck in a tool", owner_id: "lifetime-owner", id: run_id)
+
+      :ok = Runs.subscribe(run_id)
+
+      {:ok, pid} =
+        RunWorker.start_link(
+          run: run,
+          opts:
+            @wide_deadline_opts ++
+              [
+                orchestrator_module: IdleOrchestrator,
+                executor_module: BlockingRequestExecutor,
+                terminal_run_ttl_ms: 5_000,
+                skip_history: true
+              ],
+          auto_start: true,
+          name: nil
+        )
+
+      assert_receive {:run_started, %{run_id: ^run_id}}, @wait_ms
+      send(pid, {:tool_requested, %{tool: :git_diff, input: %{}, role: :planner}})
+
+      assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, @wait_ms
+      assert message =~ "maximum lifetime"
+    end
+
+    test "leaves the worker answering calls while it runs" do
+      run_id = "run-responsive-tool-#{System.unique_integer([:positive])}"
+
+      pid =
+        start_blocked_on_approved_tool(run_id,
+          terminal_run_ttl_ms: 5_000,
+          skip_history: true
+        )
+
+      assert {:ok, %Run{id: ^run_id}} = RunWorker.get_run(pid)
+      assert :ok = RunWorker.cancel(pid, "lifetime-owner")
+      assert {:ok, %Run{status: :cancelled}} = RunWorker.get_run(pid)
+    end
+
+    test "does not hold its supervisor slot past the deadline" do
+      run_id = "run-slot-tool-#{System.unique_integer([:positive])}"
+
+      pid =
+        start_blocked_on_approved_tool(
+          run_id,
+          @wide_deadline_opts ++ [terminal_run_ttl_ms: 30, skip_history: true]
+        )
+
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @wait_ms
+    end
+
+    # The tool task outlives nothing: a worker that terminalises while a tool is
+    # still running must take the tool process down with it, or the `System.cmd`
+    # child keeps running with no worker left to receive its output.
+    test "is shut down when the run terminalises under it" do
+      run_id = "run-tool-shutdown-#{System.unique_integer([:positive])}"
+
+      pid =
+        start_blocked_on_approved_tool(run_id,
+          terminal_run_ttl_ms: 5_000,
+          skip_history: true
+        )
+
+      [tool_pid] = tool_task_pids(pid)
+      tool_ref = Process.monitor(tool_pid)
+
+      assert :ok = RunWorker.cancel(pid, "lifetime-owner")
+
+      assert_receive {:DOWN, ^tool_ref, :process, ^tool_pid, _reason}, @wait_ms
+      assert tool_task_pids(pid) == []
+    end
+
+    # A tool result that lands after the deadline already failed the run must
+    # not broadcast, for the same reason a straggler stage_chunk must not: the
+    # run's outcome is final.
+    test "cannot broadcast a result once the run is already terminal" do
+      run_id = "run-late-tool-result-#{System.unique_integer([:positive])}"
+
+      pid =
+        start_blocked_on_approved_tool(
+          run_id,
+          @wide_deadline_opts ++ [terminal_run_ttl_ms: 5_000, skip_history: true]
+        )
+
+      # Captured while the tool is still in flight: the deadline shuts the tool
+      # task down and forgets its ref, so this is the only moment it exists.
+      [ref] = tool_task_refs(pid)
+
+      assert_receive {:run_failed, %{run_id: ^run_id}}, @wait_ms
+
+      send(pid, {ref, {:ok, %{output: "too-late"}}})
+
+      refute_receive {:tool_completed, %{run_id: ^run_id}}, 300
+      assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+    end
   end
 end
