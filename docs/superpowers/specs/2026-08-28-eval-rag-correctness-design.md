@@ -49,7 +49,7 @@ Three things that look adjacent and are already correct; this spec does not chan
 2. Remove every scorer clause that turns an unreadable result into a pass.
 3. Make a shrinking suite visible: report skipped cases by name and reason, and never let a skip look like a pass.
 4. Put the planner stage — where RAG context lands — under the secret scanner.
-5. Stop rebuilding an unchanged RAG index, without ever serving stale context, and without letting a cache cross the `allow_secret_paths` boundary.
+5. Stop rebuilding an unchanged RAG index, without ever serving stale context, and without letting a cache cross the `allow_secret_paths` boundary. Bound what is cached by measured bytes, not by a proxy.
 6. Emit `:rag_failed` when RAG fails, while keeping the run alive on empty context.
 7. Land the `rag_default_index` golden case Spec A deferred, driving the *real* `Index.build/1` against a workspace seeded with secret-shaped files.
 
@@ -71,7 +71,7 @@ Section 2 (Scorer)    no vacuous pass — unreadable actual fails
 Section 3 (Evals)     skipped cases are reported, not dropped
 Section 4 (Runner)    planner stage enters `actual`
           ↓ (Sections 1-4 are the harness; 5-7 are what it now proves)
-Section 5 (RAG cache) fingerprint-validated ETS cache + precomputed terms
+Section 5 (RAG cache) fingerprint-validated ETS cache, byte-bounded; faster search
 Section 6 (rag_failed) orchestrator emits a real event on RAG failure
 Section 7 (golden)    rag_default_index drives the real index
 ```
@@ -186,10 +186,34 @@ Building is done by the **caller**, never inside the GenServer. This is Spec D's
 
 **Limits.** `@defaults` in `RAG.Cache` is the only place a number is written; `config :mr_eric, :rag_cache` is override-only; `fetch!/1` has no catch-all clause and no default parameter, so an unknown key raises at the call site. Same contract as `MrEric.Runs.Limits`, deliberately a separate one — run lifetime and index memory are different subjects and `Runs.Limits.fetch!/1` must keep raising on keys that are not about runs.
 
-| Limit | Default | Meaning |
-|-------|---------|---------|
-| `max_cached_indexes` | 4 | Distinct keys held. Effectively "workspaces in play". Over the cap, the least recently read entry is dropped. |
-| `max_cached_chunks` | 20_000 | An index larger than this is returned to the caller but not stored, so one oversized workspace cannot own the table. |
+**The bound is bytes, not chunks.** An earlier draft of this section capped `max_cached_chunks`. That is the same mistake Spec D made with the trace and had to correct — `CLAUDE.md` records the outcome as "the trace is bounded by size, not only by entry count". A chunk's `content` is capped by `chunk_size`, but the `:terms` map attached in 5e is not capped by anything the cache controls, and measurement shows it is the larger half.
+
+Measured on this repository (`Index.build/1`, default opts, 2026-08-28):
+
+| Quantity | Value |
+|----------|-------|
+| Files indexed | 148 |
+| Chunks | 819 |
+| Chunk `content` (refc binaries) | 1.16 MiB |
+| Chunk structures (heap) | 0.17 MiB |
+| `:terms` + `:path_terms` maps (heap) | 3.99 MiB |
+| **Total resident** | **5.32 MiB — 6,811 B per chunk** |
+
+So the index costs roughly **4.6× the raw indexable text**, and 75 % of that is the term maps. A `max_cached_chunks: 20_000` cap would have permitted ~136 MiB per index and ~544 MiB across four of them.
+
+**The cost model.** `put/3` needs the footprint without walking the heap, so it computes
+
+```
+index_bytes = Σ_chunks [ byte_size(content) + Σ_terms (byte_size(term) + 48) + 200 ]
+```
+
+The 48 B/entry is the measured map-entry overhead (75,719 entries, 4,183,256 B of heap, 481,435 B of that in key bytes → 48.8 B of overhead per entry); the flat 200 B/chunk covers the chunk map itself. The model predicts 5.28 MiB against a measured 5.32 MiB — **within 1.6 %** — which is accurate enough for a bound and costs one arithmetic pass.
+
+| Limit | Default | Derivation |
+|-------|---------|------------|
+| `max_cached_index_bytes` | 24_000_000 | ≈ 4.5× this repository's index. A project several times larger than MrEric still caches; anything beyond is returned to the caller and not stored. |
+| `max_cached_total_bytes` | 48_000_000 | The real ceiling: two full-size indexes, or ~9 of this repository. For scale, the run side budgets ~8 MiB (`max_trace_payload_chars` × `max_trace_entries` × `max_concurrent_runs`). |
+| `max_cached_indexes` | 4 | Key-count guard only, so many tiny workspaces cannot grow the table without limit. Eviction is least-recently-read. |
 
 ### 5d. Flow
 
@@ -205,11 +229,30 @@ otherwise:
 
 `Index.build/1` accepts the already-computed fingerprint (and the discovery result it came from) through opts so the tree is walked once per `context_for/2`, not twice.
 
-### 5e. Precomputed term frequencies
+### 5e. Precomputed term frequencies **and a deferred exact bonus**
 
-`Chunker.chunk_text/3` attaches `:terms` (`%{term => count}`) and `:path_terms` to each chunk. `Retriever.score/3` reads them instead of recomputing.
+Two changes to `Retriever`, and they only pay off together.
+
+`Chunker.chunk_text/3` attaches `:terms` (`%{term => count}`) and `:path_terms` to each chunk; `Retriever.score/3` reads them instead of recomputing.
+
+`Retriever.search/3` then computes the lexical score for every chunk, **filters to `score > 0`, and applies `exact_bonus` only to the survivors**. This is behaviour-preserving: `exact_bonus` fires when the chunk's downcased content contains the whole downcased query, which implies the content contains every query token, which implies a non-zero lexical score. `exact_bonus > 0 ⟹ lexical_score > 0`, so the survivors are a superset of the chunks the bonus can reach. (The degenerate case — a query whose tokens are all shorter than two characters — already returns `[]` before scoring.)
+
+Measured on this repository's 819-chunk index (min of 7 trials, 15 iterations each, warmed):
+
+| Variant | Per query | vs today |
+|---------|-----------|----------|
+| A — today: tokenize live, `exact_bonus` on every chunk | 137.07 ms | — |
+| B — precomputed terms only | 55.94 ms | 2.5× |
+| C — deferred `exact_bonus` only | 178.30 ms | **0.8× (slower)** |
+| D — both | **8.65 ms** | **15.8×** |
+
+Each change alone leaves the other cost dominating: with live tokenization the bonus is not the bottleneck (C adds a pass and loses), and with the bonus still running over all 819 chunks the per-query `String.downcase/1` over 1.16 MiB dominates (B). Doing only one of them is not worth 4 MiB of resident memory; doing both is.
+
+The variants were checked for equivalence over eight queries — including a no-match query, a single-token query, a stop-word query, and a punctuated one — and A, B, C, and D return identical `{path, start_line, score}` triples in identical order in every case.
 
 A chunk without `:terms` — one handed in through `opts[:rag_index]` by a caller holding an older shape — gets its frequencies computed in an explicit fallback clause. This is a *performance* fallback and is safe: the value it computes is the same value the index would have stored. It is not the "lookup with a default" pattern Spec C-1 banned, because nothing about a boundary depends on it. The distinction is stated here so a later reader does not delete it for the wrong reason, or add a similar default somewhere it *would* matter.
+
+**Rejected: an inverted index.** A `term → [{chunk, count}]` map looked like the obvious way to stop paying map-entry overhead 75,719 times instead of 8,124. Measured, it is **1.19× smaller** — 3.35 MiB against 3.99 MiB — because the postings tuples and list cells reproduce almost exactly the overhead the map entries had. It would still speed up search by touching only chunks that contain a query term, but that is not what these limits are about, and D already gets 15.8× without restructuring `Retriever`'s data model. Recorded here so the idea is not re-derived and re-implemented on the same wrong prediction.
 
 ### Tests
 
@@ -219,9 +262,11 @@ A chunk without `:terms` — one handed in through `opts[:rag_index]` by a calle
 - **`allow_secret_paths: true` and `allow_secret_paths: false` never share a cache entry**, and a secret-inclusive index is never returned to a caller that did not ask for one.
 - Differing `include_extensions`, `max_file_bytes`, `chunk_size`, and `extra_ignored_files` each produce distinct keys.
 - `max_cached_indexes` evicts the least recently read entry; the evicted key rebuilds on next use.
-- An index exceeding `max_cached_chunks` is returned but not stored.
+- An index exceeding `max_cached_index_bytes` is returned but not stored.
+- Inserting indexes past `max_cached_total_bytes` evicts least-recently-read entries until the total fits.
+- The `index_bytes/1` cost model is asserted against a hand-computed fixture, so a change to the chunk shape that alters the footprint is visible.
 - `Cache.fetch!/1` raises for an unknown limit key.
-- `Retriever.search/3` returns identical results with and without precomputed `:terms`.
+- `Retriever.search/3` returns identical `{path, start_line, score}` triples, in identical order, across all four variants (live/precomputed terms × eager/deferred `exact_bonus`), over a query set that includes a no-match query, a single-token query, a stop-word query, and a punctuated query.
 
 ## Section 6 — `:rag_failed` becomes a real event
 
@@ -300,6 +345,7 @@ The echo is what makes the case meaningful. Section 4 put the planner stage in `
 | `allow_secret_paths` leaks across the key. | Explicit test; called out in the module doc for `RAG.Cache.key/1`. |
 | `mtime` granularity (1 s on some filesystems) hides a same-second edit. | Fingerprint includes `size` as well as `mtime`. A same-second, same-size edit is possible in principle; the cost is one stale planner context in a dev tool, and the alternative (hashing every file) costs exactly what the cache is meant to save. Recorded here rather than mitigated. |
 | Strict parsing turns an existing valid fixture into a raise. | The committed fixture is parsed in a test, and the whole suite runs in `mix precommit`. |
+| The byte budget (24 MB per index, 48 MB total) is derived from one repository. | The derivation is written down in 5c so it can be re-run: measure `Index.build/1` on the workspace in question and compare. A project whose index exceeds the cap is not cached — it degrades to today's behaviour, which is correct but slow, and is the loudest possible signal that the budget wants raising. |
 | Two callers miss simultaneously and both build. | Accepted. Identical results, bounded by the same limits, and cheaper than serializing builds through the cache process. |
 
 ## Acceptance criteria
@@ -310,8 +356,8 @@ The echo is what makes the case meaningful. Section 4 put the planner stage in `
 4. `actual` includes the planner stage, and `SecretChecker` scans it.
 5. A second `RAG.context_for/2` against an unchanged workspace does not rebuild the index; any change to a discovered file's `mtime` or `size`, or to the discovered set, does.
 6. Indexes built with different `allow_secret_paths` values never share a cache entry.
-7. `RAG.Cache.fetch!/1` raises for an unknown limit key; `max_cached_indexes` and `max_cached_chunks` are enforced.
-8. `Retriever.search/3` produces identical results before and after precomputed terms.
+7. `RAG.Cache.fetch!/1` raises for an unknown limit key; `max_cached_index_bytes`, `max_cached_total_bytes`, and `max_cached_indexes` are enforced, and the footprint is computed by the 5c cost model rather than by chunk count.
+8. `Retriever.search/3` produces identical results before and after precomputed terms *and* the deferred `exact_bonus`, and the pair is measurably faster than either alone.
 9. A failing RAG module produces a `rag_failed` event carrying `error_class: :rag_failed`, and the run still completes.
 10. `rag_default_index` exists, drives the real `Index.build/1`, and fails if a seeded secret reaches the planner.
 11. `mix precommit` passes and `mix mr_eric.evals` reports `failed=0` with the new case counted.
