@@ -11,7 +11,7 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は Spec A–D は `main` に入っている / 残りは Spec E–F です。
+監査由来のセキュリティ hardening は、Spec A–D が `main` に入っており、残りは Spec E–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added

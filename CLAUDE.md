@@ -61,13 +61,22 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   written, and `config :mr_eric, :run_limits` is override-only. `fetch!/1` raises on an
   unknown key — never give a limit lookup a silent default.
 - `RunSupervisor` caps concurrent workers with `max_children`; `Runs.start_run/3` returns
-  `{:error, :too_many_runs}` at the cap. `RunWorker` stops itself `terminal_run_ttl_ms`
+  `{:error, :too_many_runs}` at the cap. The cap counts **workers, not streaming runs** — a
+  finished run holds its slot until it is reaped, so a refusal can arrive when nothing is
+  actually running. `RunWorker` stops itself `terminal_run_ttl_ms`
   after its run becomes terminal (every write of `state.run` goes through `put_run/2`, so
   "terminal implies scheduled stop" holds by construction), and terminalises itself with
   `:run_lifetime_exceeded` at `max_total_runtime_ms + hard_deadline_grace_ms` no matter
-  what. `Trace` folds `stage_chunk` into per-role counters — the chunk body already lives
-  in `Run.stages[role].content` — and caps `entries`, reporting overflow as
+  what. **Terminalising is not stopping**: a stuck worker releases its slot one
+  `terminal_run_ttl_ms` after that, so the absolute ceiling on a worker's life is
+  `max_total_runtime_ms + hard_deadline_grace_ms + terminal_run_ttl_ms` — 300 s on the
+  defaults, not 240 s. `Trace` folds `stage_chunk` into per-role counters — the chunk body
+  already lives in `Run.stages[role].content` — and caps `entries`, reporting overflow as
   `dropped_entries`.
+- **`Runs.get_run/1` is time-dependent since Spec D**: reaping stops the worker, so once a
+  finished run's `terminal_run_ttl_ms` has elapsed the same run id returns
+  `{:error, :not_found}`. Read a completed run's state inside that window, or take it from
+  `MrEric.Agent` history, which outlives the worker.
 
 ### Run ownership (Spec B — implemented)
 - Every run is bound to an `owner_id`. `MrEric.Plugs.EnsureOwnerId` (wired into the
