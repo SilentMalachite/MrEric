@@ -388,10 +388,12 @@ defmodule MrEric.Runs.RunWorker do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state) do
     state =
       cond do
-        state.cancelled? ->
-          %{state | task: nil}
-
-        reason == :normal ->
+        # A run that already reached a terminal status owns its own outcome.
+        # The task's :run_completed is a plain send/2, so it arrives *before*
+        # this :DOWN — and maybe_record_history/2 has already written a
+        # completed history entry from it. Overwriting the live run with
+        # run_failed here would leave history and the run disagreeing.
+        state.cancelled? or reason == :normal or Run.terminal?(state.run) ->
           %{state | task: nil}
 
         true ->
@@ -402,6 +404,13 @@ defmodule MrEric.Runs.RunWorker do
             state
             |> put_run(run)
             |> Map.put(:task, nil)
+            # The same guard :hard_deadline sets, for the same reason: the
+            # dead task's Task.async_stream children send to this worker
+            # directly, and Run.do_apply_event/3 puts a :stage_chunk back to
+            # :streaming unconditionally. A straggler would un-terminalise the
+            # run, strand its supervisor slot until the hard deadline, and
+            # re-open handle_tool_request/2.
+            |> Map.put(:cancelled?, true)
             |> maybe_resolve_pending_tool_approvals(:run_failed)
 
           Events.broadcast(run.id, {event, payload})

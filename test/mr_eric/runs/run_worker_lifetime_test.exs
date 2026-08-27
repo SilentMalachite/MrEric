@@ -324,4 +324,79 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
     assert [] = MrEric.Agent.history(agent_name)
   end
+
+  describe "an abnormal orchestrator-task exit" do
+    # The orchestrator task's :run_completed is a plain send/2, so it reaches
+    # the worker *before* the task's :DOWN. If the task then exits abnormally,
+    # overwriting the run with run_failed contradicts the history entry that
+    # the run_completed already wrote.
+    test "leaves a run that already completed alone, and writes no second outcome" do
+      agent_name = :"history_agent_down_#{System.unique_integer([:positive])}"
+      start_supervised!({MrEric.Agent, name: agent_name})
+
+      run_id = "run-down-completed-#{System.unique_integer([:positive])}"
+      run = Run.new("finishes first", owner_id: "lifetime-owner", id: run_id)
+
+      :ok = Runs.subscribe(run_id)
+
+      {:ok, pid} =
+        RunWorker.start_link(
+          run: run,
+          opts: [
+            orchestrator_module: IdleOrchestrator,
+            terminal_run_ttl_ms: 5_000,
+            agent_server: agent_name
+          ],
+          auto_start: true,
+          name: nil
+        )
+
+      assert_receive {:run_started, %{run_id: ^run_id}}, @wait_ms
+
+      send(pid, {:run_completed, %{final: "done"}})
+      assert_receive {:run_completed, %{run_id: ^run_id}}, @wait_ms
+
+      task = :sys.get_state(pid).task
+      send(pid, {:DOWN, task.ref, :process, task.pid, :boom})
+
+      refute_receive {:run_failed, %{run_id: ^run_id}}, 300
+
+      assert {:ok, %Run{status: :completed}} = RunWorker.get_run(pid)
+      assert [%{final: "done"}] = MrEric.Agent.history(agent_name)
+    end
+
+    # stream_drafts/stream_reviews run their children under Task.async_stream
+    # and each child sends to the worker directly. When the parent task dies
+    # abnormally, a sibling's chunk can still be in flight — and
+    # Run.do_apply_event/3 puts :stage_chunk back to :streaming unconditionally.
+    test "suppresses a straggler stage_chunk from the killed task's children" do
+      run_id = "run-down-late-chunk-#{System.unique_integer([:positive])}"
+      run = Run.new("crashes", owner_id: "lifetime-owner", id: run_id)
+
+      :ok = Runs.subscribe(run_id)
+
+      {:ok, pid} =
+        RunWorker.start_link(
+          run: run,
+          opts: [
+            orchestrator_module: IdleOrchestrator,
+            terminal_run_ttl_ms: 5_000,
+            skip_history: true
+          ],
+          auto_start: true,
+          name: nil
+        )
+
+      assert_receive {:run_started, %{run_id: ^run_id}}, @wait_ms
+
+      task = :sys.get_state(pid).task
+      send(pid, {:DOWN, task.ref, :process, task.pid, :boom})
+      assert_receive {:run_failed, %{run_id: ^run_id}}, @wait_ms
+
+      send(pid, {:stage_chunk, %{role: :local_drafter, chunk: "straggler"}})
+
+      refute_receive {:stage_chunk, %{run_id: ^run_id}}, 300
+      assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+    end
+  end
 end
