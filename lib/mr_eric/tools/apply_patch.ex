@@ -26,22 +26,39 @@ defmodule MrEric.Tools.ApplyPatch do
 
   @impl true
   def run(args, opts) do
-    with {:ok, proposal} <- PatchValidator.validate(args, opts),
-         :ok <- apply_proposal(proposal, opts) do
+    with {:ok, proposal} <- PatchValidator.validate(args, opts) do
+      apply_validated(proposal, opts)
+    end
+  end
+
+  @doc false
+  # Applies an already-validated proposal. Split out of `run/2` so the
+  # re-resolution guard can be exercised deterministically: a test validates,
+  # swaps a symlink in, and then calls this.
+  def apply_validated(proposal, opts) do
+    with :ok <- apply_proposal(proposal, opts) do
       {:ok, PatchResult.success(proposal, git_diff(proposal.changed_files, opts))}
     end
   end
 
-  defp apply_proposal(%{mode: :changes, changes: changes}, _opts) do
-    Enum.each(changes, fn change ->
-      change.full_path
-      |> Path.dirname()
-      |> File.mkdir_p!()
+  defp apply_proposal(%{mode: :changes, changes: changes}, opts) do
+    Enum.reduce_while(changes, :ok, fn change, :ok ->
+      # Re-resolve immediately before writing: `PatchValidator` checked this
+      # path earlier, and a segment can have become a symlink since.
+      #
+      # `File.write!/2` still follows whatever the path means at open time, and
+      # Erlang exposes no `O_NOFOLLOW`, so this narrows the race window rather
+      # than closing it.
+      case Policy.resolve_workspace_path(change.path, opts) do
+        {:ok, full_path} ->
+          full_path |> Path.dirname() |> File.mkdir_p!()
+          File.write!(full_path, change.after_content)
+          {:cont, :ok}
 
-      File.write!(change.full_path, change.after_content)
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
     end)
-
-    :ok
   rescue
     error -> {:error, Exception.message(error)}
   end
