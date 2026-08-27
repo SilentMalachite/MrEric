@@ -4,6 +4,7 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
   alias MrEric.Runs
   alias MrEric.Runs.Run
   alias MrEric.Runs.RunSupervisor
+  alias MrEric.Runs.Trace
   alias MrEric.Runs.RunWorker
 
   defmodule IdleOrchestrator do
@@ -40,7 +41,6 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     def request_tool(_tool, _args, _reason, _opts), do: Process.sleep(:infinity)
     def execute_approved(_request, _opts), do: Process.sleep(:infinity)
   end
-
 
   defp start_worker(opts) do
     run =
@@ -270,7 +270,15 @@ defmodule MrEric.Runs.RunWorkerLifetimeTest do
     assert_receive {:run_failed, %{run_id: ^run_id, error: message}}, @wait_ms
     assert message =~ "maximum lifetime"
 
-    assert {:ok, %Run{status: :failed}} = RunWorker.get_run(pid)
+    assert {:ok, %Run{status: :failed} = failed} = RunWorker.get_run(pid)
+
+    # Through the worker, not through Errors.classify/1 in isolation: the
+    # deadline's `:run_lifetime_exceeded` reaches the trace only after
+    # Events.normalize_event/2 has replaced it with a sentence, and a run
+    # stopped at its deadline has to read as a timeout in the trace an eval
+    # or an operator actually looks at.
+    assert failed.trace.error_classification == :timeout
+    assert Trace.summary(failed.trace).error_classification == :timeout
   end
 
   test "the deadline is inert once the run has already finished" do

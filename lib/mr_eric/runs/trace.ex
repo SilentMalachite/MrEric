@@ -23,6 +23,7 @@ defmodule MrEric.Runs.Trace do
   ]
 
   @truncation_marker " … [truncated]"
+  @classifications Errors.classifications()
 
   def new(run_id, task, provider, model, metadata \\ %{}) do
     now = DateTime.utc_now()
@@ -133,27 +134,19 @@ defmodule MrEric.Runs.Trace do
   defp update_from_event(trace, :run_failed, payload, now) do
     trace
     |> complete(:failed, now)
-    |> Map.put(:error_classification, Errors.classify(Map.get(payload, :error) || payload))
+    |> Map.put(:error_classification, classify(payload, payload))
   end
 
   defp update_from_event(trace, :stage_failed, payload, _now) do
-    Map.put(trace, :error_classification, Errors.classify(Map.get(payload, :error) || payload))
+    Map.put(trace, :error_classification, classify(payload, payload))
   end
 
   defp update_from_event(trace, :tool_denied, payload, _now) do
-    Map.put(
-      trace,
-      :error_classification,
-      Errors.classify(Map.get(payload, :error) || :tool_denied)
-    )
+    Map.put(trace, :error_classification, classify(payload, :tool_denied))
   end
 
   defp update_from_event(trace, :tool_rejected, payload, _now) do
-    Map.put(
-      trace,
-      :error_classification,
-      Errors.classify(Map.get(payload, :error) || :approval_rejected)
-    )
+    Map.put(trace, :error_classification, classify(payload, :approval_rejected))
   end
 
   defp update_from_event(trace, _event, _payload, _now), do: trace
@@ -169,10 +162,25 @@ defmodule MrEric.Runs.Trace do
 
   defp error_classification(event, payload)
        when event in [:run_failed, :stage_failed, :tool_failed, :tool_denied, :tool_rejected] do
-    Errors.classify(Map.get(payload, :error) || payload)
+    classify(payload, payload)
   end
 
   defp error_classification(_event, _payload), do: nil
+
+  # Everything a RunWorker records has been through
+  # `Events.normalize_event/2`, which replaces `:error` with a sentence written
+  # for a human and carries the classification it took while the raw reason was
+  # still known. Re-deriving one from the sentence is keyword-matching against
+  # English: it is what made a run stopped at its absolute deadline -- "The run
+  # exceeded its maximum lifetime and was stopped." -- classify as `:unknown`.
+  # The fallback stays for the direct `Trace.record/3` callers, which never went
+  # through normalization and still hold the raw reason.
+  defp classify(payload, fallback) do
+    case Map.get(payload, :error_class) do
+      class when class in @classifications -> class
+      _other -> Errors.classify(Map.get(payload, :error) || fallback)
+    end
+  end
 
   # The entry cap counts entries; this is what turns that count into a memory
   # bound. Truncation runs *after* `Errors.redact/1` on purpose -- cutting a

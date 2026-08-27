@@ -39,6 +39,41 @@ defmodule MrEric.Runs.TraceTest do
     assert Trace.summary(trace).status == :failed
   end
 
+  # Every event a RunWorker records has been through
+  # `Events.normalize_event/2` first, so `:error` is a sentence and
+  # `:error_class` is the classification taken while the raw reason was still
+  # known. Re-deriving one from the sentence is what made a run stopped at its
+  # absolute deadline classify as `:unknown`.
+  describe "a normalized payload's classification" do
+    test "is preferred over re-deriving one from the sanitized message" do
+      trace =
+        Trace.new("run-normalized", "task", :fake, "fake-model")
+        |> Trace.record(:run_failed, %{
+          error: "The run exceeded its maximum lifetime and was stopped.",
+          error_class: :timeout
+        })
+
+      assert trace.error_classification == :timeout
+      assert List.last(trace.entries).error_classification == :timeout
+    end
+
+    test "still falls back to the reason when no classification was carried" do
+      trace =
+        Trace.new("run-unnormalized", "task", :fake, "fake-model")
+        |> Trace.record(:stage_failed, %{role: :planner, error: :econnrefused})
+
+      assert trace.error_classification == :provider_unavailable
+    end
+
+    test "is ignored when it is not a real classification" do
+      trace =
+        Trace.new("run-bogus-class", "task", :fake, "fake-model")
+        |> Trace.record(:run_failed, %{error: :missing_api_key, error_class: :nonsense})
+
+      assert trace.error_classification == :missing_api_key
+    end
+  end
+
   test "folds repeated stage chunks into one entry per role and counts the rest" do
     trace =
       Enum.reduce(1..1_000, Trace.new("run-fold", "task", :ollama, "m"), fn n, acc ->
