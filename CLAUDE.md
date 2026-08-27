@@ -55,6 +55,19 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   the data layer changes (this is documented at the top of `lib/mr_eric/runs/run.ex`).
 - PubSub topic is always `"runs:#{run_id}"`. Run statuses and roles are the closed lists in
   `lib/mr_eric/runs/run.ex`; event names live in `lib/mr_eric/runs/events.ex`.
+- **Run limits are one contract.** `MrEric.Runs.Limits` owns `max_concurrent_runs`,
+  `terminal_run_ttl_ms`, `hard_deadline_grace_ms`, `max_trace_entries`, and
+  `max_history_entries`; `@defaults` in that module is the only place a default is
+  written, and `config :mr_eric, :run_limits` is override-only. `fetch!/1` raises on an
+  unknown key — never give a limit lookup a silent default.
+- `RunSupervisor` caps concurrent workers with `max_children`; `Runs.start_run/3` returns
+  `{:error, :too_many_runs}` at the cap. `RunWorker` stops itself `terminal_run_ttl_ms`
+  after its run becomes terminal (every write of `state.run` goes through `put_run/2`, so
+  "terminal implies scheduled stop" holds by construction), and terminalises itself with
+  `:run_lifetime_exceeded` at `max_total_runtime_ms + hard_deadline_grace_ms` no matter
+  what. `Trace` folds `stage_chunk` into per-role counters — the chunk body already lives
+  in `Run.stages[role].content` — and caps `entries`, reporting overflow as
+  `dropped_entries`.
 
 ### Run ownership (Spec B — implemented)
 - Every run is bound to an `owner_id`. `MrEric.Plugs.EnsureOwnerId` (wired into the

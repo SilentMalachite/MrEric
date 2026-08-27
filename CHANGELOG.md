@@ -11,11 +11,24 @@ MrEric の主要な変更を記録します。
 AI-agent run orchestration、承認付き tool / patch flow、軽量 RAG、MCP extension point、
 deterministic eval harness、session-bound run ownership、local-first provider 判定までの実装が含まれています。
 
-監査由来のセキュリティ hardening は Spec A–C と Spec C-1 まで `main` に入っています。残りは Spec D–F です。
+監査由来のセキュリティ hardening は Spec A–D は `main` に入っている / 残りは Spec E–F です。
 進捗は `docs/superpowers/README.md` を参照してください。
 
 ### Added
 
+- run 寿命と資源上限を追加（Spec D、2026-08-27）。
+  - `MrEric.Runs.Limits` が `max_concurrent_runs` / `terminal_run_ttl_ms` /
+    `hard_deadline_grace_ms` / `max_trace_entries` / `max_history_entries` を所有。
+    既定値はこのモジュールの `@defaults` のみに書き、`config :mr_eric, :run_limits` は上書き専用。
+    未知キーは `fetch!/1` が例外にする。
+  - `RunSupervisor` に `max_children` を設定し、上限到達時は `MrEric.Runs.start_run/3` が
+    `{:error, :too_many_runs}` を返す。
+  - `RunWorker` は terminal 到達から `terminal_run_ttl_ms` 後に自身を停止し、
+    `max_total_runtime_ms + hard_deadline_grace_ms` の絶対期限で
+    `:run_lifetime_exceeded` として必ず terminal になる。
+  - `MrEric.Runs.Trace` は `stage_chunk` を role ごとのカウンタに畳み（本文は
+    `Run.stages[role].content` に残る）、`entries` を上限で切って `dropped_entries` に記録。
+  - 完了 run 履歴は `MrEric.Agent` と LiveView の history stream の双方で上限を持つ。
 - 起動時の local-first provider 判定を追加（2026-06-07）。
   - `MrEric.LLM.ProviderResolver` が `[:lmstudio, :ollama, :openai]` を短い timeout でヘルスチェックし、最初に到達できた provider をキャッシュ。
   - `AI_PROVIDER` または `:ai_provider` が明示されている場合は連鎖をスキップ。
