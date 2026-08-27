@@ -277,8 +277,11 @@ defmodule MrEric.LLM.FakeProvider do
           Map.get(script, normalize_name(role)) ||
           Map.get(script, agent_name)
 
+      # No `normalize_name/1` fallback here, unlike the map branch above: a
+      # keyword list's keys are atoms, and `normalize_name/1` returns a binary,
+      # so that lookup could never match.
       is_list(script) ->
-        Keyword.get(script, role) || Keyword.get(script, normalize_name(role))
+        Keyword.get(script, role)
 
       true ->
         nil
