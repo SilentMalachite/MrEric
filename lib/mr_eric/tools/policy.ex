@@ -25,7 +25,15 @@ defmodule MrEric.Tools.Policy do
   # (no argument) or `:path` / `:pattern` / `:literal` (takes an argument,
   # attached or as the next token).
   #
-  # `:literal` asserts that leaving the value unchecked is safe for THAT option.
+  # `:literal` asserts that leaving the value unchecked is safe for THAT option,
+  # AND that the option's value is mandatory. Use `:literal_optional` when the
+  # real grammar is `[=<value>]` -- a mandatory-value model would swallow the
+  # following operand, removing it from path classification.
+  #
+  # `:path_pattern_source` is a path that ALSO supplies the search pattern
+  # (`grep -f`, `rg --file`). With one of these present the program has no
+  # pattern operand, so every bare operand is a file.
+  #
   # When unsure, use `:path`. Never add a lookup default -- absence must refuse.
   @git_subcommands %{
     "status" => %{
@@ -35,7 +43,8 @@ defmodule MrEric.Tools.Policy do
         "--branch" => :flag,
         "--porcelain" => :flag,
         "--long" => :flag,
-        "--untracked-files" => :literal
+        # `--untracked-files[=<mode>]` -- optional value.
+        "--untracked-files" => :literal_optional
       },
       operands: :paths
     },
@@ -52,7 +61,8 @@ defmodule MrEric.Tools.Policy do
         "--no-color" => :flag,
         "--find-renames" => :flag,
         "--unified" => :literal,
-        "--color" => :literal
+        # `--color[=<when>]` -- optional value.
+        "--color" => :literal_optional
       },
       operands: :paths
     },
@@ -111,7 +121,8 @@ defmodule MrEric.Tools.Policy do
         "R" => :flag,
         "G" => :flag
       },
-      long: %{"--color" => :literal},
+      # `--color[=WHEN]` -- optional value; a following token is an operand.
+      long: %{"--color" => :literal_optional},
       operands: :paths
     },
     # grep's `-L` is "files without match" and is harmless; rg's `-L` is
@@ -141,7 +152,7 @@ defmodule MrEric.Tools.Policy do
         "q" => :flag,
         "s" => :flag,
         "e" => :pattern,
-        "f" => :path,
+        "f" => :path_pattern_source,
         "m" => :literal,
         "A" => :literal,
         "B" => :literal,
@@ -149,8 +160,8 @@ defmodule MrEric.Tools.Policy do
       },
       long: %{
         "--regexp" => :pattern,
-        "--file" => :path,
-        "--color" => :literal,
+        "--file" => :path_pattern_source,
+        "--color" => :literal_optional,
         "--include" => :literal,
         "--exclude" => :literal,
         # GNU's long form of `-r`; `--dereference-recursive` is absent.
@@ -185,7 +196,7 @@ defmodule MrEric.Tools.Policy do
         "u" => :flag,
         "H" => :flag,
         "e" => :pattern,
-        "f" => :path,
+        "f" => :path_pattern_source,
         "m" => :literal,
         "A" => :literal,
         "B" => :literal,
@@ -196,7 +207,7 @@ defmodule MrEric.Tools.Policy do
       long: %{
         "--version" => :flag,
         "--regexp" => :pattern,
-        "--file" => :path,
+        "--file" => :path_pattern_source,
         "--glob" => :literal,
         "--type" => :literal,
         "--color" => :literal,
@@ -635,24 +646,38 @@ defmodule MrEric.Tools.Policy do
     end
   end
 
-  # The value is whatever was attached to the option, else the next token.
-  defp consume_value(kind, :none, [], _grammar, _opts, _pattern_seen?)
-       when kind in [:path, :pattern, :literal],
-       do: {:error, :invalid_args}
+  # An optional-value option binds ONLY in the attached / `=value` form. A
+  # following separate token is an operand, not the value -- consuming it would
+  # remove it from operand classification and so from the path check.
+  defp consume_value(:literal_optional, :none, rest, grammar, opts, pattern_seen?),
+    do: walk_argv(rest, grammar, opts, pattern_seen?)
+
+  defp consume_value(:literal_optional, _value, rest, grammar, opts, pattern_seen?),
+    do: walk_argv(rest, grammar, opts, pattern_seen?)
+
+  # Otherwise the value is whatever was attached, else the next token.
+  defp consume_value(_kind, :none, [], _grammar, _opts, _pattern_seen?),
+    do: {:error, :invalid_args}
 
   defp consume_value(kind, :none, [value | rest], grammar, opts, pattern_seen?) do
     with :ok <- classify_value(kind, value, opts) do
-      walk_argv(rest, grammar, opts, pattern_seen? or kind == :pattern)
+      walk_argv(rest, grammar, opts, pattern_seen? or pattern_source?(kind))
     end
   end
 
   defp consume_value(kind, value, rest, grammar, opts, pattern_seen?) do
     with :ok <- classify_value(kind, value, opts) do
-      walk_argv(rest, grammar, opts, pattern_seen? or kind == :pattern)
+      walk_argv(rest, grammar, opts, pattern_seen? or pattern_source?(kind))
     end
   end
 
-  defp classify_value(:path, value, opts) do
+  # With a pattern source present the program has no pattern operand, so the
+  # next bare operand must be classified as a path, not swallowed as the regex.
+  defp pattern_source?(:pattern), do: true
+  defp pattern_source?(:path_pattern_source), do: true
+  defp pattern_source?(_kind), do: false
+
+  defp classify_value(kind, value, opts) when kind in [:path, :path_pattern_source] do
     case resolve_workspace_path(value, opts) do
       {:ok, _path} -> :ok
       {:error, reason} -> {:error, reason}

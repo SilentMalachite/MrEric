@@ -163,15 +163,16 @@ defmodule MrEric.Tools.PolicyTest do
              )
 
     # Spec C-1 delta: still refused, but now as an option rather than as a path.
-    # `ensure_program_options_allowed/1` runs ahead of the path check so that
-    # --git-dir is rejected whether or not its argument happens to escape.
+    # `--git-dir` is absent from the git entry's `long` map, so `Map.fetch/2`
+    # fails and the walker refuses before any value is resolved -- whether or
+    # not the argument happens to escape.
     assert {:error, :dangerous_command} =
              Policy.authorize(:shell_command, %{command: "git --git-dir=/tmp/.git status"},
                workspace_root: workspace
              )
   end
 
-  describe "root-repointing options and bare program names (Spec C-1)" do
+  describe "git global options and bare program names (Spec C-1)" do
     test "rejects git options that re-point the repository", %{workspace: workspace} do
       for command <- [
             "git --git-dir=../store status --short",
@@ -216,6 +217,83 @@ defmodule MrEric.Tools.PolicyTest do
     test "still allows a bare program name", %{workspace: workspace} do
       assert {:ok, %{approval_required?: true}} =
                Policy.authorize(:shell_command, %{command: "pwd"}, workspace_root: workspace)
+    end
+  end
+
+  describe "value kinds: pattern sources and optional values (Spec C-1 rev 2)" do
+    # A pattern source (-f/--file) means the program has NO pattern operand, so
+    # every bare operand is a file and must be path-checked.
+    test "an operand after -f/--file is a path, not the pattern", %{workspace: workspace} do
+      File.write!(Path.join(workspace, "pat.txt"), "root\n")
+
+      for command <- [
+            "grep -f pat.txt /etc/passwd",
+            "grep -fpat.txt /etc/passwd",
+            "grep --file=pat.txt /etc/passwd",
+            "grep -f pat.txt -- /etc/passwd",
+            "rg -f pat.txt /etc/passwd",
+            "rg --file=pat.txt /etc/passwd"
+          ] do
+        assert {:error, :outside_workspace} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be refused"
+      end
+    end
+
+    test "a secret path after -f is still refused", %{workspace: workspace} do
+      File.write!(Path.join(workspace, "pat.txt"), "x\n")
+
+      assert {:error, :secret_file} =
+               Policy.authorize(:shell_command, %{command: "grep -f pat.txt .env"},
+                 workspace_root: workspace
+               )
+    end
+
+    test "-f with an in-workspace operand is still allowed", %{workspace: workspace} do
+      File.write!(Path.join(workspace, "pat.txt"), "x\n")
+
+      assert {:ok, %{approval_required?: true}} =
+               Policy.authorize(:shell_command, %{command: "grep -f pat.txt note.txt"},
+                 workspace_root: workspace
+               )
+    end
+
+    # An optional-value option binds only in the attached / =value form. Taking
+    # the next token would remove that operand from path classification.
+    test "an optional-value option does not swallow the following operand", %{
+      workspace: workspace
+    } do
+      for command <- [
+            "ls --color /etc",
+            "ls --color ..",
+            "grep --color root /etc/passwd",
+            "git status --untracked-files ..",
+            "git diff --color /etc"
+          ] do
+        assert {:error, :outside_workspace} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be refused"
+      end
+    end
+
+    test "optional-value options still work bare and attached", %{workspace: workspace} do
+      for command <- [
+            "ls --color",
+            "ls --color=auto",
+            "ls --color .",
+            "git status --untracked-files",
+            "git status --untracked-files=all"
+          ] do
+        assert {:ok, %{approval_required?: true}} =
+                 Policy.authorize(:shell_command, %{command: command},
+                   workspace_root: workspace
+                 ),
+               "expected #{command} to be allowed"
+      end
     end
   end
 
