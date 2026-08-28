@@ -86,6 +86,11 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   Normalization carries `:error_class` (always a member of `Errors.classifications/0`)
   and `Trace` reads it. Never re-derive a classification by keyword-matching a sanitized
   message — that is what made `:run_lifetime_exceeded` classify as `:unknown`.
+  **A carried `:error_class` therefore wins over a re-derivation**, so normalizing an
+  already-normalized payload no longer downgrades it. Use `Events.publish/2` for a
+  payload you already normalized and `broadcast/2` for a raw one — that distinction
+  still says what the caller knows — but a defensive second pass (`AgentLive` runs one
+  as a redaction backstop) is now harmless rather than destructive.
 - **`Runs.get_run/1` is time-dependent since Spec D**: reaping stops the worker, so once a
   finished run's `terminal_run_ttl_ms` has elapsed the same run id returns
   `{:error, :not_found}`. Read a completed run's state inside that window, or take it from
@@ -213,11 +218,19 @@ No external network is touched in tests: OpenAI-compatible HTTP is mocked
   The bound is `max_cached_index_bytes` / `max_cached_total_bytes`, not a chunk
   count: measured, the term maps are 75 % of an index, so a count is not a memory
   bound — the same lesson `max_trace_entries` taught in Spec D.
-- **`Retriever` scores from precomputed `:terms` and applies `exact_bonus` only to
-  chunks that already scored.** That is sound because `exact_bonus > 0` implies
-  `lexical_score > 0`. Note that `tokenize/1` uniqs before frequencies are taken,
-  so every term count is `1` and the score counts *distinct* query tokens; do not
-  "fix" that into occurrence counting without treating it as a ranking change.
+- **`Retriever` scores from precomputed `:terms`, and `exact_bonus` is added to
+  every chunk before the `score > 0` filter.** Spec E briefly deferred the bonus
+  to chunks that had already scored lexically, on the lemma
+  `exact_bonus > 0 ⟹ lexical_score > 0`. **That lemma is false**: the bonus fires
+  on a raw substring match, so a query can sit inside the content without being
+  one of its tokens — `"command"` against `"shell commands"`, `"eric"` against
+  `"MrEric"`. Both scored 5 before the deferral and disappeared after it. The
+  deferral skipped a per-query `String.downcase/1` over the whole corpus, which
+  was worth real time; buy that back by storing downcased content at index time,
+  never by narrowing what the bonus can reach. Note also that `tokenize/1` uniqs
+  before frequencies are taken, so every term count is `1` and the score counts
+  *distinct* query tokens; do not "fix" that into occurrence counting without
+  treating it as a ranking change.
 - **RAG failure is visible.** The orchestrator emits `:rag_failed` and continues
   with empty context. It still never fails a run. The payload's `:error` carries
   the `:rag_failed` sentinel, never the raw reason: the reason can hold a secret

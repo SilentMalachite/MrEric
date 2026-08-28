@@ -25,8 +25,10 @@ deterministic eval harness、session-bound run ownership、local-first provider 
   - `actual` に planner ステージを追加し、SecretChecker の走査対象にした。
   - `MrEric.RAG.Cache`（ETS、バイト単位の上限、`allow_secret_paths` をキーに含む）と
     `Index.fingerprint/1` を追加。未変更のワークスペースは再構築しない。
-  - `Retriever` が事前計算済みの語を読み、`exact_bonus` を候補のみに適用（実測 17.3×、
-    結果は完全一致）。
+  - `Retriever` が事前計算済みの語を読む（実測 6.7×、結果は完全一致）。`exact_bonus` は
+    従来どおり全 chunk に対して `score > 0` の前に加算する。候補のみへの遅延適用は
+    さらに 4.6× 速かったが、ランキングを変えるため撤回した（`exact_bonus` は部分文字列
+    一致なので `exact_bonus > 0 ⟹ lexical_score > 0` は成り立たない）。
   - `:rag_failed` イベントを追加。RAG 失敗は run を壊さないまま可視化される。
   - `rag_default_index` golden case を追加（Spec A から先送りされていたもの）。
 - run 寿命と資源上限を追加（Spec D、2026-08-27）。

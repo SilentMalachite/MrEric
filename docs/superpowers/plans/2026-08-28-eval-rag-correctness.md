@@ -34,7 +34,7 @@
 | `lib/mix/tasks/mr_eric.evals.ex` | modify | Prints passed/failed/**skipped**. |
 | `lib/mr_eric/evals/runner.ex` | modify | Drives a case; seeds the workspace per scenario; returns the planner stage. |
 | `lib/mr_eric/rag/chunker.ex` | modify | Produces chunks carrying `:terms` / `:path_terms`. |
-| `lib/mr_eric/rag/retriever.ex` | modify | Scores from precomputed terms; applies `exact_bonus` to candidates only. |
+| `lib/mr_eric/rag/retriever.ex` | modify | Scores from precomputed terms. (`exact_bonus` stays eager — the deferral in Task 6 was withdrawn, see the correction there.) |
 | `lib/mr_eric/rag/index.ex` | modify | Builds the index **and** a cheap `fingerprint/1` from the same walk. |
 | `lib/mr_eric/rag/cache.ex` | **create** | Owns the ETS cache, its key, its cost model, and its byte limits. |
 | `lib/mr_eric/rag.ex` | modify | Fetch-or-build-and-put around `Index.build/1`. |
@@ -1035,11 +1035,13 @@ distinct tokens. Retriever still recomputes; that changes next."
 
 ---
 
-## Task 6: Retriever reads terms and defers the exact bonus
+## Task 6: Retriever reads terms (the exact bonus stays eager)
 
-Finishes spec §5e. Measured on this repository's 819-chunk index, precomputed terms alone give 2.5×, deferring the exact bonus alone is a *loss* (0.8×), and the two together give 17.3× against the shipping function (149.03 ms → 8.63 ms).
+> **Correction — 2026-08-28, after implementation and review.** This task originally deferred `exact_bonus` to the chunks that had already scored lexically, on the lemma `exact_bonus > 0 ⟹ lexical_score > 0`. **The lemma is false and the deferral has been reverted.** The bonus fires on `String.contains?/2` over the raw content — a substring test, not token containment — so a query can be inside the content without being one of its tokens: `"command"` against `"shell commands"`, `"eric"` against `"MrEric"`. Both scored `5` before and were dropped after. On this repository's own index the single-token queries `"command"`, `"run"`, `"eric"`, `"limit"` and `"event"` lost 66, 68, 494, 113 and 153 chunks. The code and commit message below have been corrected to what actually shipped; the deferral is recorded here only so it is not re-derived.
 
-The deferral is behaviour-preserving: `exact_bonus` fires only when the downcased content contains the whole downcased query, which implies the content contains every query token, which implies a non-zero lexical score. So `exact_bonus > 0 ⟹ lexical_score > 0`, and filtering on lexical score first cannot drop a chunk the bonus could have rescued. The degenerate case — a query whose tokens are all shorter than two characters — already returns `[]` before scoring.
+Finishes spec §5e. Measured on this repository's 819-chunk index at planning time, precomputed terms alone give 2.5× and deferring the exact bonus alone is a *loss* (0.8×). Re-measured on the 877-chunk index after the correction, what ships — precomputed terms, eager bonus — runs at **61.98 ms/query against the pre-Spec-E scorer's 414.92 ms/query, a 6.7× speedup with identical `{path, start_line, score}` triples in identical order**.
+
+The further 4.6× the deferral would have added is real, and is why it is tempting. Buying it back means storing downcased content at index time (roughly +30 % index bytes) — never narrowing what the bonus can reach, because the ranking is the contract.
 
 **Files:**
 - Modify: `lib/mr_eric/rag/retriever.ex`
@@ -1174,9 +1176,10 @@ Replace the whole module body below the `@default_top_k` attribute with:
       downcased_query = String.downcase(String.trim(query))
 
       chunks
-      |> Enum.map(&Map.put(&1, :score, lexical_score(&1, tokens)))
+      |> Enum.map(
+        &Map.put(&1, :score, lexical_score(&1, tokens) + exact_bonus(&1, downcased_query))
+      )
       |> Enum.filter(&(&1.score > 0))
-      |> Enum.map(&Map.put(&1, :score, &1.score + exact_bonus(&1, downcased_query)))
       |> Enum.sort_by(&{-&1.score, &1.path, &1.start_line})
       |> Enum.take(top_k)
     end
@@ -1206,12 +1209,17 @@ Replace the whole module body below the `@default_top_k` attribute with:
     end
   end
 
-  # Only reached for chunks that already scored above zero lexically. That is
-  # sound, not an approximation: the bonus fires when the content contains the
-  # whole query, which means it contains every query token, which means the
-  # lexical score was already non-zero. Computing it for every chunk meant
-  # downcasing the entire corpus on every query -- the single largest cost in
-  # `search/3`.
+  # The bonus is added to every chunk's score *before* the `score > 0` filter,
+  # and must stay that way. Spec E deferred it to chunks that had already
+  # scored lexically, on the lemma `exact_bonus > 0 => lexical_score > 0`. That
+  # lemma is false: the bonus fires on a raw substring match, not on token
+  # containment, so a query can be inside the content without being one of its
+  # tokens -- `"command"` against `"shell commands"`, or `"eric"` against
+  # `"MrEric"`. Both scored 5 before the deferral and vanished after it. The
+  # deferral bought a real speedup (it skips a per-query `String.downcase/1`
+  # over the whole corpus), but the ranking is the contract; buy that speedup
+  # back by storing the downcased content at index time, never by narrowing
+  # what the bonus can reach.
   defp exact_bonus(chunk, downcased_query) do
     content = Map.get(chunk, :content, "")
 
@@ -1248,12 +1256,13 @@ Expected: suite green; `passed=14 failed=0 skipped=0`.
 
 ```bash
 git add lib/mr_eric/rag/retriever.ex test/mr_eric/rag/retriever_test.exs
-git commit -m "perf(rag): score from precomputed terms, bonus only candidates
+git commit -m "perf(rag): score from precomputed terms
 
-Measured on this repo's 819-chunk index: precomputed terms alone 2.5x,
-deferred exact bonus alone 0.8x (a loss), both together 17.3x -- 149.03 ms
-to 8.63 ms. Deferral is sound because exact_bonus > 0 implies
-lexical_score > 0. Verified score- and order-identical over ten queries."
+Measured on this repo's index: 414.92 ms/query to 61.98 ms/query, 6.7x,
+with {path, start_line, score} triples identical in identical order to the
+pre-Spec-E scorer. exact_bonus stays eager -- it matches substrings, not
+tokens, so exact_bonus > 0 does not imply lexical_score > 0 and deferring
+it drops chunks (66 for 'command', 494 for 'eric' on this index)."
 ```
 
 ---
@@ -2664,11 +2673,19 @@ In the "RAG and MCP are deliberately minimal" section, append:
   The bound is `max_cached_index_bytes` / `max_cached_total_bytes`, not a chunk
   count: measured, the term maps are 75 % of an index, so a count is not a memory
   bound — the same lesson `max_trace_entries` taught in Spec D.
-- **`Retriever` scores from precomputed `:terms` and applies `exact_bonus` only to
-  chunks that already scored.** That is sound because `exact_bonus > 0` implies
-  `lexical_score > 0`. Note that `tokenize/1` uniqs before frequencies are taken,
-  so every term count is `1` and the score counts *distinct* query tokens; do not
-  "fix" that into occurrence counting without treating it as a ranking change.
+- **`Retriever` scores from precomputed `:terms`, and `exact_bonus` is added to
+  every chunk before the `score > 0` filter.** Spec E briefly deferred the bonus
+  to chunks that had already scored lexically, on the lemma
+  `exact_bonus > 0 ⟹ lexical_score > 0`. **That lemma is false**: the bonus fires
+  on a raw substring match, so a query can sit inside the content without being
+  one of its tokens — `"command"` against `"shell commands"`, `"eric"` against
+  `"MrEric"`. Both scored 5 before the deferral and disappeared after it. The
+  deferral skipped a per-query `String.downcase/1` over the whole corpus, which
+  was worth real time; buy that back by storing downcased content at index time,
+  never by narrowing what the bonus can reach. Note also that `tokenize/1` uniqs
+  before frequencies are taken, so every term count is `1` and the score counts
+  *distinct* query tokens; do not "fix" that into occurrence counting without
+  treating it as a ranking change.
 - **RAG failure is visible.** The orchestrator emits `:rag_failed` and continues
   with empty context. It still never fails a run.
 ```
@@ -2703,8 +2720,10 @@ Under `## [Unreleased]` → `### Added`, add as the first bullet:
   - `actual` に planner ステージを追加し、SecretChecker の走査対象にした。
   - `MrEric.RAG.Cache`（ETS、バイト単位の上限、`allow_secret_paths` をキーに含む）と
     `Index.fingerprint/1` を追加。未変更のワークスペースは再構築しない。
-  - `Retriever` が事前計算済みの語を読み、`exact_bonus` を候補のみに適用（実測 17.3×、
-    結果は完全一致）。
+  - `Retriever` が事前計算済みの語を読む（実測 6.7×、結果は完全一致）。`exact_bonus` は
+    従来どおり全 chunk に対して `score > 0` の前に加算する。候補のみへの遅延適用は
+    さらに 4.6× 速かったが、ランキングを変えるため撤回した（`exact_bonus` は部分文字列
+    一致なので `exact_bonus > 0 ⟹ lexical_score > 0` は成り立たない）。
   - `:rag_failed` イベントを追加。RAG 失敗は run を壊さないまま可視化される。
   - `rag_default_index` golden case を追加（Spec A から先送りされていたもの）。
 ```
@@ -2745,7 +2764,7 @@ Run through this before declaring Spec E done. Each line maps to a numbered crit
 - [ ] A second `RAG.context_for/2` against an unchanged workspace does not rebuild; any change to a discovered file's `mtime` or `size`, or to the discovered set, does. *(Tasks 7, 9)*
 - [ ] Indexes built with different `allow_secret_paths` values never share a cache entry. *(Tasks 8, 9)*
 - [ ] `RAG.Cache.fetch!/1` raises for an unknown limit key; `max_cached_index_bytes`, `max_cached_total_bytes`, and `max_cached_indexes` are enforced, and the footprint comes from the cost model rather than a chunk count. *(Task 8)*
-- [ ] `Retriever.search/3` produces identical results before and after precomputed terms *and* the deferred `exact_bonus`. *(Task 6)*
+- [ ] `Retriever.search/3` produces results identical to the pre-Spec-E scorer, verified against a transcription of it over a query set including proper-substring queries. `exact_bonus` is **not** deferred. *(Task 6)*
 - [ ] A failing RAG module produces a `rag_failed` event carrying `error_class: :rag_failed`, and the run still completes. *(Tasks 10, 11)*
-- [ ] `rag_default_index` exists, drives the real `Index.build/1`, and was **observed to fail** when a secret-exclusion rule was temporarily removed. *(Task 13, Step 5)*
+- [ ] `rag_default_index` exists and drives the real `Index.build/1`, proven by `expected_status`. Its secret canaries are guards, not assertions: `Events`' redaction masks the `sk-`/`API_KEY=` ones before `SecretChecker` sees them, and each file is excluded by several independent rules, so removing one surfaces nothing. Only the PEM can fail the case, and a test pins that. *(Task 13, Step 5)*
 - [ ] `mix precommit` passes and `mix mr_eric.evals` reports `passed=15 failed=0 skipped=0`. *(Task 14)*

@@ -229,7 +229,7 @@ otherwise:
 
 `Index.build/1` accepts the already-computed fingerprint (and the discovery result it came from) through opts so the tree is walked once per `context_for/2`, not twice.
 
-### 5e. Precomputed term frequencies **and a deferred exact bonus**
+### 5e. Precomputed term frequencies (the exact bonus stays eager)
 
 Two changes to `Retriever`, and they only pay off together.
 
@@ -239,7 +239,9 @@ Two changes to `Retriever`, and they only pay off together.
 
 Whether counting occurrences would retrieve better is a retrieval-quality question, and §8 puts those outside this spec. Recorded here so the `1`s are not later "fixed" into a ranking change nobody asked for.
 
-`Retriever.search/3` then computes the lexical score for every chunk, **filters to `score > 0`, and applies `exact_bonus` only to the survivors**. This is behaviour-preserving: `exact_bonus` fires when the chunk's downcased content contains the whole downcased query, which implies the content contains every query token, which implies a non-zero lexical score. `exact_bonus > 0 ⟹ lexical_score > 0`, so the survivors are a superset of the chunks the bonus can reach. (The degenerate case — a query whose tokens are all shorter than two characters — already returns `[]` before scoring.)
+`Retriever.search/3` then computes the lexical score for every chunk from those terms. **`exact_bonus` stays exactly where it is today: added to every chunk's score before the `score > 0` filter.**
+
+> **Correction — 2026-08-28, after implementation.** This section originally specified deferring `exact_bonus` to the chunks that had already scored lexically, justified by the lemma `exact_bonus > 0 ⟹ lexical_score > 0`. **The lemma is false, and the deferral has been withdrawn.** The bonus fires on `String.contains?(String.downcase(content), downcased_query)` — a raw substring test, not token containment — so a query can sit inside the content without being one of its tokens. `"command"` against `"shell commands"`, and `"eric"` against `"MrEric"`, both score `0` lexically and `5` with the bonus; the deferral dropped them outright. Measured against this repository's own index (877 chunks), the single-token queries `"command"`, `"run"`, `"eric"`, `"limit"` and `"event"` lost 66, 68, 494, 113 and 153 chunks respectively. The degenerate case the original argument leaned on — a query whose tokens are all shorter than two characters — is real but beside the point: it returns `[]` before scoring under either ordering.
 
 Measured on this repository's 819-chunk index (min of 7 trials, 15 iterations each, warmed):
 
@@ -250,9 +252,9 @@ Measured on this repository's 819-chunk index (min of 7 trials, 15 iterations ea
 | C — deferred `exact_bonus` only | 178.30 ms | **0.8× (slower)** |
 | D — both | **8.65 ms** | **15.8×** |
 
-Each change alone leaves the other cost dominating: with live tokenization the bonus is not the bottleneck (C adds a pass and loses), and with the bonus still running over all 819 chunks the per-query `String.downcase/1` over 1.16 MiB dominates (B). Doing only one of them is not worth 4 MiB of resident memory; doing both is.
+Each change alone leaves the other cost dominating: with live tokenization the bonus is not the bottleneck (C adds a pass and loses), and with the bonus still running over all 819 chunks the per-query `String.downcase/1` over 1.16 MiB dominates (B).
 
-That A/B/C/D comparison was made between four variants written for the benchmark, so it only shows the two changes are complementary. The claim that matters — the proposal returns what the code returns today — was checked separately against `MrEric.RAG.Retriever.search/3` itself, with `:terms` built the uniq-preserving way described above: **identical `{path, start_line, score}` triples in identical order across ten queries**, including a no-match query, a single-token query, a stop-word query, a punctuated one, and the degenerate `"a"` (all tokens shorter than two characters → no hits). Against the shipping function the speedup measures **17.3×** (149.03 ms → 8.63 ms).
+**Only variant B ships.** C and D are the deferral, and the deferral is wrong (see the correction above). What ships is precomputed terms with the bonus left eager — B, not D. Re-measured after the correction on the current 877-chunk index (min of 5 trials, 15 iterations over 10 queries): the pre-Spec-E scorer costs **414.92 ms/query**, the shipped one **61.98 ms/query** — a **6.7×** speedup, with `{path, start_line, score}` triples identical in identical order across the whole query set. (These absolute numbers are larger than the A/B/C/D table's because the index has grown and the trials were run on a different day; the ratio is what carries over.) The deferral would have cost a further 4.6× — 13.46 ms/query — and that is what makes it tempting enough to be re-derived. It is not available at this data model. The way to buy it back is to store the downcased content at index time, paying roughly +30 % index bytes for a bonus that stays exactly as reachable as it is today; narrowing what the bonus can reach is not an option, because the ranking is the contract.
 
 A chunk without `:terms` — one handed in through `opts[:rag_index]` by a caller holding an older shape — gets its frequencies computed in an explicit fallback clause. This is a *performance* fallback and is safe: the value it computes is the same value the index would have stored. It is not the "lookup with a default" pattern Spec C-1 banned, because nothing about a boundary depends on it. The distinction is stated here so a later reader does not delete it for the wrong reason, or add a similar default somewhere it *would* matter.
 
@@ -270,7 +272,7 @@ A chunk without `:terms` — one handed in through `opts[:rag_index]` by a calle
 - Inserting indexes past `max_cached_total_bytes` evicts least-recently-read entries until the total fits.
 - The `index_bytes/1` cost model is asserted against a hand-computed fixture, so a change to the chunk shape that alters the footprint is visible.
 - `Cache.fetch!/1` raises for an unknown limit key.
-- `Retriever.search/3` returns identical `{path, start_line, score}` triples, in identical order, across all four variants (live/precomputed terms × eager/deferred `exact_bonus`), over a query set that includes a no-match query, a single-token query, a stop-word query, and a punctuated query.
+- `Retriever.search/3` returns identical `{path, start_line, score}` triples, in identical order, to **the pre-Spec-E scorer transcribed into the test file** — not merely to itself run over a second chunk shape, which cannot see a change made to `search/3`. The query set includes a no-match query, a single-token query, a stop-word query, a punctuated query, a leading/trailing-whitespace query, an upper-case query, and — the cases that caught the deferral — a query that is a proper substring of a corpus token (`"command"` against `"shell commands"`, `"eric"` against `"MrEric"`) and one that spans a token boundary.
 
 ## Section 6 — `:rag_failed` becomes a real event
 
@@ -311,7 +313,9 @@ Every seeded secret is a fixed dummy value in the repo, matched by `SecretChecke
 - Prompt lacks `phase9-default-index-marker` → `{:error, {:fake_failure, :planner}}`. The real index did not run, or ran and found nothing; either way the case must fail, and it fails on `expected_status`. (Deliberately *not* `{:error, :rag_failed}` — that would collide with Section 6's event and make the failure ambiguous.)
 - Prompt has the marker → the planner echoes the received `Project context:` section into its own output.
 
-The echo is what makes the case meaningful. Section 4 put the planner stage in `actual`; `SecretChecker` walks `actual`; so if any seeded secret survived into the index, the case fails with `:secret_leak` rather than passing quietly.
+The echo is what makes the case meaningful. Section 4 put the planner stage in `actual`; `SecretChecker` walks `actual`; so a seeded secret that survived into the index can fail the case with `:secret_leak` rather than passing quietly.
+
+> **Correction — 2026-08-28, after implementation.** "Can", not "does", and only for one of the three canaries. `Events.normalize_event/2` runs `redact_secrets/1` over every binary in a `stage_completed` payload, so `Run.stages` already holds `[REDACTED]` by the time `SecretChecker` walks `actual`. Measured: `OPENAI_API_KEY=sk-…` and `config :mr_eric, secret: "sk-…"` both scan **clean** after normalization; only the `priv/cert/server.key` PEM survives, because its header matches none of `redact_secrets/1`'s patterns. So the `.env` and `config/dev.secret.exs` files are guards that cannot fire, and `expected_status` — `FakeProvider` fails the planner when the marker did not arrive — is what actually proves the index worked. `evals_test.exs` pins which canary has teeth so the fixture is not read as asserting more than it does. Each secret is also excluded by several independent rules, so removing any one of them surfaces nothing either.
 
 **The case:**
 
@@ -361,9 +365,9 @@ The echo is what makes the case meaningful. Section 4 put the planner stage in `
 5. A second `RAG.context_for/2` against an unchanged workspace does not rebuild the index; any change to a discovered file's `mtime` or `size`, or to the discovered set, does.
 6. Indexes built with different `allow_secret_paths` values never share a cache entry.
 7. `RAG.Cache.fetch!/1` raises for an unknown limit key; `max_cached_index_bytes`, `max_cached_total_bytes`, and `max_cached_indexes` are enforced, and the footprint is computed by the 5c cost model rather than by chunk count.
-8. `Retriever.search/3` produces identical results before and after precomputed terms *and* the deferred `exact_bonus`, and the pair is measurably faster than either alone.
+8. `Retriever.search/3` produces results identical to the pre-Spec-E scorer — verified against a transcription of it, over a query set including proper-substring queries — and precomputed terms make it measurably faster. `exact_bonus` is **not** deferred.
 9. A failing RAG module produces a `rag_failed` event carrying `error_class: :rag_failed`, and the run still completes.
-10. `rag_default_index` exists, drives the real `Index.build/1`, and fails if a seeded secret reaches the planner.
+10. `rag_default_index` exists and drives the real `Index.build/1`, proven by `expected_status` (the planner fails outright without the marker). A seeded secret reaching the planner fails the case **only if `Events`' redaction does not mask it first** — of the three canaries, only the PEM does; a test pins which.
 11. `mix precommit` passes and `mix mr_eric.evals` reports `failed=0` with the new case counted.
 
 ## Out of scope (tracked elsewhere)
