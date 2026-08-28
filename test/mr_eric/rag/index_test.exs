@@ -75,8 +75,11 @@ defmodule MrEric.RAG.IndexTest do
     File.mkdir_p!(Path.join(workspace, "priv/cert"))
     File.mkdir_p!(Path.join(workspace, "priv/secrets"))
 
-    File.write!(Path.join(workspace, "config/dev.exs"),
-      ~s|config :app, secret_key_base: "FAKE-TEST-VALUE-DO-NOT-USE"\n|)
+    File.write!(
+      Path.join(workspace, "config/dev.exs"),
+      ~s|config :app, secret_key_base: "FAKE-TEST-VALUE-DO-NOT-USE"\n|
+    )
+
     File.write!(Path.join(workspace, "priv/cert/server.pem"), "-----BEGIN CERT-----\n")
     File.write!(Path.join(workspace, "priv/secrets/foo.exs"), "config :app, secret: 1\n")
 
@@ -173,5 +176,45 @@ defmodule MrEric.RAG.IndexTest do
   test "fingerprint/1 reports an invalid workspace like build/1 does" do
     assert {:error, :invalid_workspace} =
              Index.fingerprint(workspace_root: "/nonexistent/mr-eric-workspace")
+  end
+
+  test "fingerprint/1 never stats a caller-supplied path outside the workspace", %{
+    workspace: workspace
+  } do
+    escape = "../../../../../etc/hosts"
+    opts = [workspace_root: workspace, paths: [escape]]
+
+    # Policy is the authority, and it refuses this path.
+    assert {:error, :outside_workspace} =
+             MrEric.Tools.Policy.resolve_workspace_path(escape, workspace_root: workspace)
+
+    assert {:ok, escaped_fingerprint, [^escape]} = Index.fingerprint(opts)
+
+    # The fingerprint must come from the refusal, not from the real file's
+    # mtime and size -- so a workspace-local file with the *same* rejected
+    # entry shape hashes identically no matter what lives outside.
+    other_workspace =
+      Path.join(System.tmp_dir!(), "mr-eric-rag-escape-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(other_workspace)
+    on_exit(fn -> File.rm_rf!(other_workspace) end)
+
+    assert {:ok, ^escaped_fingerprint, [^escape]} =
+             Index.fingerprint(workspace_root: other_workspace, paths: [escape])
+  end
+
+  test "fingerprint/1 refuses a caller-supplied secret path", %{workspace: workspace} do
+    assert {:ok, fingerprint, [".env"]} =
+             Index.fingerprint(workspace_root: workspace, paths: [".env"])
+
+    File.write!(Path.join(workspace, ".env"), "OPENAI_API_KEY=sk-entirely-different-now")
+
+    assert {:ok, ^fingerprint, [".env"]} =
+             Index.fingerprint(workspace_root: workspace, paths: [".env"])
+  end
+
+  test "fingerprint/1 uses a digest wide enough not to collide", %{workspace: workspace} do
+    assert {:ok, fingerprint, _paths} = Index.fingerprint(workspace_root: workspace)
+    assert byte_size(fingerprint) == 32
   end
 end

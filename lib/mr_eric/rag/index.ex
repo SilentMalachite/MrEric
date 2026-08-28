@@ -67,6 +67,12 @@ defmodule MrEric.RAG.Index do
   second on some filesystems, and size catches most same-second edits. A
   same-second, same-size edit can still slip through; the alternative is
   hashing every file, which costs exactly what the cache exists to save.
+
+  The digest is SHA-256 over the sorted entries, **not** `:erlang.phash2/1`.
+  `phash2` answers in a 2^27 range, which is small enough to find collisions
+  in a few hundred thousand tries -- two different sizes for the same path and
+  mtime hashing alike. A fingerprint collision is a stale index served as
+  fresh, which is the one failure this function exists to prevent.
   """
   def fingerprint(opts \\ []) do
     workspace = Policy.workspace_root(opts)
@@ -79,14 +85,32 @@ defmodule MrEric.RAG.Index do
         end
 
       sorted = Enum.sort(entries)
-      {:ok, :erlang.phash2(sorted), Enum.map(sorted, fn {path, _mtime, _size} -> path end)}
+      {:ok, digest(sorted), Enum.map(sorted, fn {path, _mtime, _size} -> path end)}
     else
       {:error, :invalid_workspace}
     end
   end
 
+  defp digest(entries) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(entries, [:deterministic]))
+  end
+
+  # Entries from `discover_entries/2` were produced by a walk that already
+  # stayed inside the workspace and already skipped symlinks. `opts[:paths]` is
+  # caller-supplied and has had neither check, so it goes through `Policy` --
+  # the same resolution `index_path/3` performs before reading. Without it a
+  # `../../../etc/passwd` entry would be `lstat`ed, putting a file's existence,
+  # mtime and size outside the workspace into the fingerprint. `Policy` is the
+  # single authority on which paths RAG may touch; no second opinion here.
   defp stat_entry(workspace, relative_path) do
-    case File.lstat(Path.join(workspace, relative_path)) do
+    case Policy.resolve_workspace_path(relative_path, workspace_root: workspace) do
+      {:ok, absolute_path} -> lstat_entry(relative_path, absolute_path)
+      {:error, reason} -> {relative_path, reason, -1}
+    end
+  end
+
+  defp lstat_entry(relative_path, absolute_path) do
+    case File.lstat(absolute_path) do
       {:ok, %File.Stat{mtime: mtime, size: size}} -> {relative_path, mtime, size}
       {:error, reason} -> {relative_path, reason, -1}
     end
