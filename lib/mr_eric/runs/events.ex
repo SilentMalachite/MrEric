@@ -38,9 +38,36 @@ defmodule MrEric.Runs.Events do
     Phoenix.PubSub.unsubscribe(MrEric.PubSub, topic(run_id))
   end
 
+  @doc """
+  Normalizes `event` and publishes it. For callers holding a **raw** event.
+
+  If the payload has already been through `normalize_event/2`, use
+  `publish/2` instead — see the warning there.
+  """
   def broadcast(run_id, event) when not is_nil(run_id) do
     normalized = normalize_event(run_id, event)
-    Phoenix.PubSub.broadcast(MrEric.PubSub, topic(run_id), normalized)
+    publish(run_id, normalized)
+  end
+
+  @doc """
+  Publishes an already-normalized event, without normalizing it again.
+
+  `normalize_event/2` is **not** idempotent, and cannot be: it replaces
+  `:error` with a sentence written for a human and takes `:error_class` from
+  the raw reason while that reason still exists. Run it twice and the second
+  pass classifies the sentence, which is keyword-matching against English —
+  `Errors.classify/1` answers `:unknown` for "Project context lookup failed."
+  and for "The run exceeded its maximum lifetime and was stopped."
+
+  `RunWorker` normalizes once, applies the result to the run, and publishes
+  that same payload; before this function existed it went back through
+  `broadcast/2` and normalized a second time, so `Run` and `Trace` held the
+  right classification while every PubSub subscriber got `:unknown`. That is
+  the bug `CLAUDE.md` records against `:run_lifetime_exceeded` — fixed in the
+  trace, still live on the wire.
+  """
+  def publish(run_id, {event, payload}) when not is_nil(run_id) and event in @event_names do
+    Phoenix.PubSub.broadcast(MrEric.PubSub, topic(run_id), {event, payload})
   end
 
   def normalize_event(run_id, {event, payload}) when event in @event_names do

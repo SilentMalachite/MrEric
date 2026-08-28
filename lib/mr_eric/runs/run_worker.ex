@@ -158,7 +158,7 @@ defmodule MrEric.Runs.RunWorker do
       state.run
       |> Run.apply_event({event, payload})
 
-    Events.broadcast(run.id, {event, payload})
+    Events.publish(run.id, {event, payload})
 
     worker = self()
     orchestrator = Keyword.get(state.opts, :orchestrator_module, Orchestrator)
@@ -202,7 +202,7 @@ defmodule MrEric.Runs.RunWorker do
               |> Map.put(:cancelled?, true)
               |> maybe_resolve_pending_tool_approvals(:run_cancelled)
 
-            Events.broadcast(run.id, {event, payload})
+            Events.publish(run.id, {event, payload})
 
             state
           end
@@ -393,7 +393,7 @@ defmodule MrEric.Runs.RunWorker do
         |> Map.put(:cancelled?, true)
         |> maybe_resolve_pending_tool_approvals(:run_failed)
 
-      Events.broadcast(run.id, {event, payload})
+      Events.publish(run.id, {event, payload})
 
       {:noreply, state}
     end
@@ -454,7 +454,7 @@ defmodule MrEric.Runs.RunWorker do
             |> Map.put(:cancelled?, true)
             |> maybe_resolve_pending_tool_approvals(:run_failed)
 
-          Events.broadcast(run.id, {event, payload})
+          Events.publish(run.id, {event, payload})
           state
       end
 
@@ -490,7 +490,7 @@ defmodule MrEric.Runs.RunWorker do
       |> maybe_resolve_pending_tool_approvals(event)
       |> maybe_record_history(event)
 
-    Events.broadcast(run.id, {event, payload})
+    Events.publish(run.id, {event, payload})
 
     {:noreply, state}
   end
@@ -605,7 +605,7 @@ defmodule MrEric.Runs.RunWorker do
           {:tool_approval_expired, %{approval_id: approval_id, reason: :run_terminated}}
         )
 
-      Events.broadcast(state.run.id, {ev, payload})
+      Events.publish(state.run.id, {ev, payload})
     end)
 
     %{state | pending_tool_approvals: %{}}
@@ -782,7 +782,7 @@ defmodule MrEric.Runs.RunWorker do
   defp broadcast_and_apply(state, event, payload) do
     {event, payload} = Events.normalize_event(state.run.id, {event, payload})
     run = Run.apply_event(state.run, {event, payload})
-    Events.broadcast(run.id, {event, payload})
+    Events.publish(run.id, {event, payload})
     put_run(state, run)
   end
 
@@ -876,7 +876,7 @@ defmodule MrEric.Runs.RunWorker do
         {:tool_approval_expired, %{approval_id: approval_id, reason: reason}}
       )
 
-    Events.broadcast(state.run.id, {event, payload})
+    Events.publish(state.run.id, {event, payload})
     %{state | pending_tool_approvals: pending}
   end
 

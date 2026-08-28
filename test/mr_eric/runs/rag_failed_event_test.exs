@@ -43,6 +43,37 @@ defmodule MrEric.Runs.RagFailedEventTest do
     assert entry.error_classification == :rag_failed
   end
 
+  test "normalize_event/2 is not idempotent, so the broadcast path must not re-run it" do
+    # Pins the reason `Events.publish/2` exists. The second pass classifies the
+    # *sentence* the first pass wrote, which is keyword-matching against
+    # English. This is not specific to :rag_failed -- :run_lifetime_exceeded
+    # degrades the same way, which is the bug CLAUDE.md records.
+    for {reason, first_class} <- [rag_failed: :rag_failed, run_lifetime_exceeded: :timeout] do
+      {event, once} = Events.normalize_event("run-x", {:run_failed, %{error: reason}})
+      {^event, twice} = Events.normalize_event("run-x", {:run_failed, once})
+
+      assert once.error_class == first_class
+      assert twice.error_class == :unknown
+    end
+  end
+
+  test "a subscriber receives the classification the run recorded, not a re-derived one" do
+    run_id = "rag-failed-pubsub-#{System.unique_integer([:positive])}"
+    :ok = MrEric.Runs.subscribe(run_id)
+    on_exit(fn -> MrEric.Runs.unsubscribe(run_id) end)
+
+    {event, payload} =
+      Events.normalize_event(run_id, {:rag_failed, %{error: :rag_failed, stage: :planner}})
+
+    # Exactly what RunWorker does after applying the event to the run.
+    Events.publish(run_id, {event, payload})
+
+    assert_receive {:rag_failed, received}, 1_000
+    assert received.error_class == :rag_failed
+    assert received.error == "Project context lookup failed."
+    assert received == payload
+  end
+
   test "a rag_failed entry does not make the whole trace look like a failed run" do
     # `update_from_event/4` deliberately has no :rag_failed clause. A run that
     # completed with degraded context is not a failed run, and `summary/1`'s
