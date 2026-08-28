@@ -87,6 +87,27 @@ defmodule MrEric.RAG.CacheTest do
     assert Cache.index_bytes(idx) == 305
   end
 
+  test "index_bytes/1 counts the errors an index retains" do
+    error = %{path: "a.md", reason: :too_large}
+    idx = %{index([]) | errors: [error]}
+
+    assert Cache.index_bytes(idx) == :erlang.external_size(error) + 200
+  end
+
+  test "an index of nothing but errors is still bounded" do
+    key = Cache.key(workspace_root: "/errors-only")
+    limit = Cache.fetch!(:max_cached_index_bytes)
+
+    errors =
+      for i <- 1..64 do
+        %{path: String.duplicate("p", div(limit, 32)) <> "#{i}", reason: :too_large}
+      end
+
+    assert Cache.index_bytes(%{index([]) | errors: errors}) > limit
+    assert :ok = Cache.put(key, 1, %{index([]) | errors: errors})
+    assert Cache.fetch(key, 1) == :miss
+  end
+
   test "an index over max_cached_index_bytes is not stored" do
     key = Cache.key(workspace_root: "/big")
     limit = Cache.fetch!(:max_cached_index_bytes)

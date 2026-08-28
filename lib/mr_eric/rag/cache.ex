@@ -57,6 +57,9 @@ defmodule MrEric.RAG.Cache do
   # against a measured 5.32 MiB -- within 1.6 %.
   @term_entry_overhead_bytes 48
   @chunk_overhead_bytes 200
+  # Per-error map overhead, on top of the measured `external_size/1` of the
+  # term. Same order as a chunk map, which an error entry resembles.
+  @error_overhead_bytes 200
 
   @doc "The built-in defaults, keyed by limit name."
   def defaults, do: @defaults
@@ -133,14 +136,33 @@ defmodule MrEric.RAG.Cache do
 
   Content bytes, plus each term key's bytes and the measured per-entry map
   overhead, plus a flat per-chunk allowance for the chunk map itself.
+
+  `:errors` counts too. It is the other variable-length field an index
+  retains -- one entry per file `build/1` could not read, each holding that
+  file's path -- and a cache that bounds only `:chunks` is not bounded by
+  bytes at all: an index of nothing but errors modelled as zero and was
+  stored under any limit. Error terms have no fixed shape, so they are
+  measured with `:erlang.external_size/1` rather than modelled.
   """
-  def index_bytes(%{chunks: chunks}) when is_list(chunks) do
-    Enum.reduce(chunks, 0, fn chunk, acc ->
-      acc + chunk_bytes(chunk)
-    end)
+  def index_bytes(index) when is_map(index) do
+    chunk_total =
+      case Map.get(index, :chunks) do
+        chunks when is_list(chunks) -> Enum.reduce(chunks, 0, &(chunk_bytes(&1) + &2))
+        _absent -> 0
+      end
+
+    chunk_total + error_bytes(Map.get(index, :errors))
   end
 
   def index_bytes(_index), do: 0
+
+  defp error_bytes(errors) when is_list(errors) do
+    Enum.reduce(errors, 0, fn error, acc ->
+      acc + :erlang.external_size(error) + @error_overhead_bytes
+    end)
+  end
+
+  defp error_bytes(_errors), do: 0
 
   defp chunk_bytes(chunk) do
     content = Map.get(chunk, :content, "")
