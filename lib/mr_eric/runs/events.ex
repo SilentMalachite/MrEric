@@ -53,9 +53,10 @@ defmodule MrEric.Runs.Events do
   Publishes an already-normalized event, without normalizing it again.
 
   `normalize_event/2` is **not** idempotent, and cannot be: it replaces
-  `:error` with a sentence written for a human and takes `:error_class` from
-  the raw reason while that reason still exists. Run it twice and the second
-  pass classifies the sentence, which is keyword-matching against English —
+  `:error` with a sentence written for a human, and a second pass can never
+  see the raw reason again. What it no longer *destroys* is the
+  classification — `:error_class` travels with the payload and a carried
+  class wins over re-deriving one from the sentence, because
   `Errors.classify/1` answers `:unknown` for "Project context lookup failed."
   and for "The run exceeded its maximum lifetime and was stopped."
 
@@ -63,8 +64,10 @@ defmodule MrEric.Runs.Events do
   that same payload; before this function existed it went back through
   `broadcast/2` and normalized a second time, so `Run` and `Trace` held the
   right classification while every PubSub subscriber got `:unknown`. That is
-  the bug `CLAUDE.md` records against `:run_lifetime_exceeded` — fixed in the
-  trace, still live on the wire.
+  the bug `CLAUDE.md` records against `:run_lifetime_exceeded`. Publishing an
+  already-normalized payload is still the right call — it says what the caller
+  knows — but a subscriber that normalizes defensively (the LiveView does, as
+  a redaction backstop) is no longer punished for it.
   """
   def publish(run_id, {event, payload}) when not is_nil(run_id) and event in @event_names do
     Phoenix.PubSub.broadcast(MrEric.PubSub, topic(run_id), {event, payload})
@@ -160,10 +163,36 @@ defmodule MrEric.Runs.Events do
 
     payload
     |> Map.put(:error, public_error(error))
-    |> Map.put(:error_class, MrEric.Errors.classify(error))
+    |> Map.put(:error_class, error_class(payload, error))
   end
 
   defp sanitize_payload(payload, _event), do: payload
+
+  # A payload that already carries an `:error_class` carries the answer taken
+  # while the raw reason still existed. Re-deriving it here would classify the
+  # sentence the earlier pass wrote, which is the keyword-matching against
+  # English this module exists to avoid -- `:run_lifetime_exceeded` and
+  # `:rag_failed` both degrade to `:unknown` that way. So a carried class
+  # wins over a re-derivation.
+  #
+  # This does not make `normalize_event/2` a substitute for `publish/2`: a
+  # second pass still cannot recover a reason the first pass replaced. It
+  # makes the second pass *harmless*, which matters because the LiveView
+  # normalizes what it receives as a redaction backstop and would otherwise
+  # downgrade every class it displays.
+  #
+  # The membership test is not decoration. It is the only thing that keeps a
+  # caller from writing an arbitrary atom into a field the whole trace and the
+  # eval harness read as a closed vocabulary.
+  defp error_class(payload, error) do
+    carried = Map.get(payload, :error_class)
+
+    if carried in MrEric.Errors.classifications() do
+      carried
+    else
+      MrEric.Errors.classify(error)
+    end
+  end
 
   defp redact_payload(%DateTime{} = value), do: value
 

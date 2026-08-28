@@ -147,6 +147,24 @@ defmodule MrEricWeb.AgentLiveTest do
     assert has_element?(view, "#task-form")
   end
 
+  test "keeps the classification the run recorded, rather than re-deriving it", %{conn: conn} do
+    # The LiveView re-normalizes what it receives as a redaction backstop. That
+    # pass must not downgrade `:error_class`: `Errors.classify/1` on the
+    # sentence the first pass wrote is keyword-matching against English.
+    {:ok, view, _html} = live(conn, "/")
+
+    event =
+      MrEric.Runs.Events.normalize_event(nil, {:rag_failed, %{run_id: nil, error: :rag_failed}})
+
+    send(view.pid, event)
+    render(view)
+
+    trace = :sys.get_state(view.pid).socket.assigns.current_run.trace
+    entry = Enum.find(trace.entries, &(&1.event == :rag_failed))
+
+    assert entry.error_classification == :rag_failed
+  end
+
   test "renders approval UI for pending tool calls and approves them", %{conn: conn} do
     workspace =
       Path.join(System.tmp_dir!(), "mr-eric-live-tools-#{System.unique_integer([:positive])}")
@@ -354,8 +372,10 @@ defmodule MrEricWeb.AgentLiveTest do
        %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
 
-    send(view.pid, {:tool_approval_expired,
-                    %{run_id: "test-run", approval_id: "ap-1", reason: :ttl}})
+    send(
+      view.pid,
+      {:tool_approval_expired, %{run_id: "test-run", approval_id: "ap-1", reason: :ttl}}
+    )
 
     assert render(view) =~ "MrEric AI Agent"
   end

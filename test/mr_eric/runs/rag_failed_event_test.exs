@@ -43,18 +43,41 @@ defmodule MrEric.Runs.RagFailedEventTest do
     assert entry.error_classification == :rag_failed
   end
 
-  test "normalize_event/2 is not idempotent, so the broadcast path must not re-run it" do
-    # Pins the reason `Events.publish/2` exists. The second pass classifies the
-    # *sentence* the first pass wrote, which is keyword-matching against
-    # English. This is not specific to :rag_failed -- :run_lifetime_exceeded
-    # degrades the same way, which is the bug CLAUDE.md records.
-    for {reason, first_class} <- [rag_failed: :rag_failed, run_lifetime_exceeded: :timeout] do
+  test "re-normalizing a normalized event keeps the classification" do
+    # `normalize_event/2` still cannot recover a raw reason it has already
+    # replaced with a sentence -- that is why `Events.publish/2` exists. But it
+    # must not *destroy* the classification either: the answer taken while the
+    # reason existed travels in `:error_class`, and every second pass keeps it.
+    # Without that, any subscriber that normalizes what it received -- the
+    # LiveView does, as a redaction backstop -- downgraded every class to
+    # `:unknown`.
+    for {reason, class} <- [rag_failed: :rag_failed, run_lifetime_exceeded: :timeout] do
       {event, once} = Events.normalize_event("run-x", {:run_failed, %{error: reason}})
       {^event, twice} = Events.normalize_event("run-x", {:run_failed, once})
 
-      assert once.error_class == first_class
-      assert twice.error_class == :unknown
+      assert once.error_class == class
+      assert twice.error_class == class
+      assert twice.error == once.error
     end
+  end
+
+  test "re-deriving a classification from the sentence is what it protects against" do
+    # The reason the carried class matters: `classify/1` on the sentence is
+    # keyword-matching against English, and answers `:unknown`.
+    {:run_failed, once} =
+      Events.normalize_event("run-y", {:run_failed, %{error: :run_lifetime_exceeded}})
+
+    assert MrEric.Errors.classify(once.error) == :unknown
+  end
+
+  test "a bogus incoming error_class is not trusted" do
+    {:run_failed, payload} =
+      Events.normalize_event(
+        "run-z",
+        {:run_failed, %{error: :rag_failed, error_class: :not_a_classification}}
+      )
+
+    assert payload.error_class == :rag_failed
   end
 
   test "a subscriber receives the classification the run recorded, not a re-derived one" do

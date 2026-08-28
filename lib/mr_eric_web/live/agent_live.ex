@@ -554,6 +554,12 @@ defmodule MrEricWeb.AgentLive do
   @impl true
   def handle_info({event, payload}, socket) when event in @run_events do
     if current_run_event?(socket.assigns.current_run, payload) do
+      # `RunWorker` publishes an already-normalized payload, so this pass is a
+      # redaction backstop, not the primary sanitizer: nothing reaches assigns
+      # or a template that has not been through `redact_payload/1` here, even
+      # if a future publisher forgets. It is safe to run twice only because
+      # `sanitize_payload/2` keeps a carried `:error_class` -- re-deriving one
+      # from the sentence the first pass wrote answers `:unknown`.
       {event, payload} = Events.normalize_event(socket.assigns.current_run.id, {event, payload})
       run = Run.apply_event(socket.assigns.current_run, {event, payload})
 
