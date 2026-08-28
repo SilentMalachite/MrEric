@@ -19,9 +19,10 @@ defmodule MrEric.RAG.Retriever do
       downcased_query = String.downcase(String.trim(query))
 
       chunks
-      |> Enum.map(&Map.put(&1, :score, lexical_score(&1, tokens)))
+      |> Enum.map(
+        &Map.put(&1, :score, lexical_score(&1, tokens) + exact_bonus(&1, downcased_query))
+      )
       |> Enum.filter(&(&1.score > 0))
-      |> Enum.map(&Map.put(&1, :score, &1.score + exact_bonus(&1, downcased_query)))
       |> Enum.sort_by(&{-&1.score, &1.path, &1.start_line})
       |> Enum.take(top_k)
     end
@@ -51,12 +52,17 @@ defmodule MrEric.RAG.Retriever do
     end
   end
 
-  # Only reached for chunks that already scored above zero lexically. That is
-  # sound, not an approximation: the bonus fires when the content contains the
-  # whole query, which means it contains every query token, which means the
-  # lexical score was already non-zero. Computing it for every chunk meant
-  # downcasing the entire corpus on every query -- the single largest cost in
-  # `search/3`.
+  # The bonus is added to every chunk's score *before* the `score > 0` filter,
+  # and must stay that way. Spec E deferred it to chunks that had already
+  # scored lexically, on the lemma `exact_bonus > 0 => lexical_score > 0`. That
+  # lemma is false: the bonus fires on a raw substring match, not on token
+  # containment, so a query can be inside the content without being one of its
+  # tokens -- `"command"` against `"shell commands"`, or `"eric"` against
+  # `"MrEric"`. Both scored 5 before the deferral and vanished after it. The
+  # deferral bought a real speedup (it skips a per-query `String.downcase/1`
+  # over the whole corpus), but the ranking is the contract; buy that speedup
+  # back by storing the downcased content at index time, never by narrowing
+  # what the bonus can reach.
   defp exact_bonus(chunk, downcased_query) do
     content = Map.get(chunk, :content, "")
 
