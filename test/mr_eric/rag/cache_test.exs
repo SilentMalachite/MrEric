@@ -129,6 +129,47 @@ defmodule MrEric.RAG.CacheTest do
     assert Enum.all?(Enum.take(rest, -limit), &match?({:ok, _}, Cache.fetch(&1, 1)))
   end
 
+  test "max_cached_total_bytes evicts the least recently read entries until the total fits" do
+    # The third byte limit. `max_cached_index_bytes` and `max_cached_indexes`
+    # each have a test; without this one the total-bytes branch of `evict/1`
+    # could stop working and the suite would stay green.
+    #
+    # The limit is lowered rather than the indexes inflated: reaching 48 MB for
+    # real would cost the suite ~150 MB of binaries to prove one comparison.
+    previous = Application.get_env(:mr_eric, :rag_cache, [])
+    on_exit(fn -> Application.put_env(:mr_eric, :rag_cache, previous) end)
+
+    one = index([chunk(String.duplicate("x", 4_000), %{})])
+    bytes = Cache.index_bytes(one)
+
+    Application.put_env(
+      :mr_eric,
+      :rag_cache,
+      Keyword.merge(previous, max_cached_total_bytes: bytes * 2)
+    )
+
+    # Only the total-bytes branch can fire: each index is far under the
+    # per-index cap, and three keys are under `max_cached_indexes` (4).
+    assert bytes < Cache.fetch!(:max_cached_index_bytes)
+    assert 3 <= Cache.fetch!(:max_cached_indexes)
+
+    [k1, k2, k3] = for i <- 1..3, do: Cache.key(workspace_root: "/total#{i}")
+
+    :ok = Cache.put(k1, 1, one)
+    :ok = Cache.put(k2, 1, one)
+
+    # Re-reading k1 makes k2 the least recently read. `fetch/2` touches by
+    # cast and `put/3` is a call, so from this process the touch is ordered
+    # before the put that triggers the eviction.
+    assert {:ok, _} = Cache.fetch(k1, 1)
+
+    :ok = Cache.put(k3, 1, one)
+
+    assert Cache.fetch(k2, 1) == :miss
+    assert {:ok, _} = Cache.fetch(k1, 1)
+    assert {:ok, _} = Cache.fetch(k3, 1)
+  end
+
   test "fetch!/1 raises for an unknown limit key" do
     assert_raise FunctionClauseError, fn -> Cache.fetch!(:no_such_limit) end
   end

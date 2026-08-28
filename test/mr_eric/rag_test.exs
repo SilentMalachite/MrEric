@@ -1,5 +1,9 @@
 defmodule MrEric.RAGTest do
-  use ExUnit.Case, async: true
+  # `MrEric.RAG.Cache` is a single named process shared by the whole suite, and
+  # these tests flush it and depend on what is in it afterwards. `cache_test.exs`
+  # is `async: false` for exactly that reason; a concurrent flush here would
+  # make its hit assertions -- and the no-rebuild test below -- flake.
+  use ExUnit.Case, async: false
 
   alias MrEric.RAG
 
@@ -41,16 +45,56 @@ defmodule MrEric.RAGTest do
     MrEric.RAG.Cache.flush()
 
     opts = [workspace_root: workspace]
+    path = Path.join(workspace, "lib/mr_eric/tools/policy.ex")
+    original = File.read!(path)
+    %File.Stat{mtime: mtime} = File.stat!(path, time: :posix)
 
     assert {:ok, first} = RAG.context_for("How does shell approval work?", opts)
-    assert {:ok, _cached} = RAG.context_for("How does shell approval work?", opts)
+    assert first =~ "shell commands always require approval"
 
     key = MrEric.RAG.Cache.key(opts)
     assert {:ok, fingerprint, _paths} = MrEric.RAG.Index.fingerprint(opts)
     assert {:ok, index} = MrEric.RAG.Cache.fetch(key, fingerprint)
     assert is_list(index.chunks)
 
+    # A cache *hit* is not evidence of no rebuild: rebuild-then-put hits too,
+    # and returns an equal context, so neither `Cache.fetch/2` nor comparing
+    # the two strings can tell the two apart. This can. `Index.fingerprint/1`
+    # is lstat-only -- `{path, mtime, size}` -- so rewriting the file with the
+    # same byte count and restoring its mtime leaves the fingerprint identical
+    # while the content underneath changes. A rebuild is then directly
+    # observable: it would return the new text.
+    rewritten = String.replace(original, "approval", "APPROVAL")
+    assert byte_size(rewritten) == byte_size(original)
+    assert rewritten != original
+    File.write!(path, rewritten)
+    File.touch!(path, mtime)
+
+    # Self-check: if the swap moved the fingerprint after all, the assertion
+    # below would pass by rebuilding, and this test would prove nothing.
+    assert {:ok, ^fingerprint, _paths} = MrEric.RAG.Index.fingerprint(opts)
+
     assert {:ok, ^first} = RAG.context_for("How does shell approval work?", opts)
+  end
+
+  test "a rebuild is what the no-rebuild test would have seen", %{workspace: workspace} do
+    # The negative control for the test above: the same content swap, with the
+    # fingerprint allowed to move, does change the answer. Without this, a
+    # `context_for/2` that had stopped reading the file at all would satisfy
+    # the no-rebuild assertion.
+    MrEric.RAG.Cache.flush()
+
+    opts = [workspace_root: workspace]
+    path = Path.join(workspace, "lib/mr_eric/tools/policy.ex")
+
+    assert {:ok, first} = RAG.context_for("How does shell approval work?", opts)
+
+    path |> File.read!() |> String.replace("approval", "APPROVAL") |> then(&File.write!(path, &1))
+    File.touch!(path, System.os_time(:second) + 5)
+
+    assert {:ok, rebuilt} = RAG.context_for("How does shell approval work?", opts)
+    refute rebuilt == first
+    assert rebuilt =~ "APPROVAL"
   end
 
   test "editing an indexed file invalidates the cached index", %{workspace: workspace} do
