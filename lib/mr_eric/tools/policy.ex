@@ -728,5 +728,4 @@ defmodule MrEric.Tools.Policy do
     |> String.trim(~s('"`))
     |> String.trim_trailing(",;")
   end
-
 end

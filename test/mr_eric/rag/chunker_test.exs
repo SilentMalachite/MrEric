@@ -33,7 +33,10 @@ defmodule MrEric.RAG.ChunkerTest do
 
   test "chunks carry precomputed terms for content and path" do
     [chunk | _] =
-      Chunker.chunk_text("lib/mr_eric/tools/policy.ex", "approval gate keeps shell commands safe\n")
+      Chunker.chunk_text(
+        "lib/mr_eric/tools/policy.ex",
+        "approval gate keeps shell commands safe\n"
+      )
 
     assert chunk.terms["approval"] == 1
     assert chunk.terms["shell"] == 1

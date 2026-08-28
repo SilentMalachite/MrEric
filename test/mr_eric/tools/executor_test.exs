@@ -275,7 +275,10 @@ defmodule MrEric.Tools.ExecutorTest do
       {:approval_required, request} =
         MrEric.Tools.Executor.execute(
           :shell_command,
-          %{command: "pwd"}, owner_id: owner, workspace_root: workspace)
+          %{command: "pwd"},
+          owner_id: owner,
+          workspace_root: workspace
+        )
 
       assert %{
                approval_id: _,
@@ -301,7 +304,10 @@ defmodule MrEric.Tools.ExecutorTest do
       {:approval_required, request} =
         MrEric.Tools.Executor.execute(
           :shell_command,
-          %{command: "pwd"}, owner_id: owner, workspace_root: workspace)
+          %{command: "pwd"},
+          owner_id: owner,
+          workspace_root: workspace
+        )
 
       tampered = %{request | owner_id: "mallory"}
 

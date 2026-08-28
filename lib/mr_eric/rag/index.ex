@@ -139,13 +139,28 @@ defmodule MrEric.RAG.Index do
     ignored_extensions = MapSet.new(@default_ignored_extensions)
 
     workspace
-    |> discover_dir("", extensions, ignored_dirs, ignored_files,
-                    ignored_extensions, allow_secret, [])
+    |> discover_dir(
+      "",
+      extensions,
+      ignored_dirs,
+      ignored_files,
+      ignored_extensions,
+      allow_secret,
+      []
+    )
     |> Enum.reverse()
   end
 
-  defp discover_dir(workspace, relative_dir, extensions, ignored_dirs,
-                    ignored_files, ignored_extensions, allow_secret, acc) do
+  defp discover_dir(
+         workspace,
+         relative_dir,
+         extensions,
+         ignored_dirs,
+         ignored_files,
+         ignored_extensions,
+         allow_secret,
+         acc
+       ) do
     dir = Path.join(workspace, relative_dir)
 
     case File.ls(dir) do
@@ -157,12 +172,26 @@ defmodule MrEric.RAG.Index do
           case File.lstat(absolute_path) do
             {:ok, %File.Stat{type: :directory}} ->
               cond do
-                MapSet.member?(ignored_dirs, entry) -> acc
-                MapSet.member?(ignored_dirs, relative_path) -> acc
-                not allow_secret and MrEric.Tools.Policy.secret_path?(relative_path) -> acc
+                MapSet.member?(ignored_dirs, entry) ->
+                  acc
+
+                MapSet.member?(ignored_dirs, relative_path) ->
+                  acc
+
+                not allow_secret and MrEric.Tools.Policy.secret_path?(relative_path) ->
+                  acc
+
                 true ->
-                  discover_dir(workspace, relative_path, extensions, ignored_dirs,
-                               ignored_files, ignored_extensions, allow_secret, acc)
+                  discover_dir(
+                    workspace,
+                    relative_path,
+                    extensions,
+                    ignored_dirs,
+                    ignored_files,
+                    ignored_extensions,
+                    allow_secret,
+                    acc
+                  )
               end
 
             {:ok, %File.Stat{type: :regular, mtime: mtime, size: size}} ->

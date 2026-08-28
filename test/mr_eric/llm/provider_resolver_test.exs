@@ -50,7 +50,8 @@ defmodule MrEric.LLM.ProviderResolverTest do
     end
 
     test "honors a custom chain" do
-      assert ProviderResolver.resolve([:ollama, :openai], health_check: fn _ -> true end) == :ollama
+      assert ProviderResolver.resolve([:ollama, :openai], health_check: fn _ -> true end) ==
+               :ollama
     end
   end
 

@@ -54,7 +54,9 @@ defmodule Mix.Tasks.MrEric.Evals do
     end)
 
     Enum.each(summary.skipped, fn skipped ->
-      Mix.shell().info("#{skipped.case}: skipped (requires: #{Enum.join(skipped.requires, ", ")})")
+      Mix.shell().info(
+        "#{skipped.case}: skipped (requires: #{Enum.join(skipped.requires, ", ")})"
+      )
     end)
 
     Mix.shell().info(

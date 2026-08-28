@@ -663,10 +663,14 @@ defmodule MrEricWeb.AgentLive do
 
   defp apply_tool_event(socket, :tool_approval_expired, payload) do
     socket
-    |> assign(:tool_approvals,
-              Map.delete(socket.assigns.tool_approvals, payload.approval_id))
-    |> assign(:expired_approvals,
-              [payload | socket.assigns.expired_approvals])
+    |> assign(
+      :tool_approvals,
+      Map.delete(socket.assigns.tool_approvals, payload.approval_id)
+    )
+    |> assign(
+      :expired_approvals,
+      [payload | socket.assigns.expired_approvals]
+    )
   end
 
   defp apply_tool_event(socket, :tool_started, payload),

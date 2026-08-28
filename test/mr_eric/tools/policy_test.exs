@@ -181,9 +181,7 @@ defmodule MrEric.Tools.PolicyTest do
             "git --exec-path=../bin status"
           ] do
         assert {:error, :dangerous_command} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 )
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace)
       end
     end
 
@@ -208,9 +206,7 @@ defmodule MrEric.Tools.PolicyTest do
     test "rejects a program token that is a path", %{workspace: workspace} do
       for command <- ["./pwd", "tmp/pwd", "bin/git status"] do
         assert {:error, :dangerous_command} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 )
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace)
       end
     end
 
@@ -235,9 +231,7 @@ defmodule MrEric.Tools.PolicyTest do
             "rg --file=pat.txt /etc/passwd"
           ] do
         assert {:error, :outside_workspace} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be refused"
       end
     end
@@ -273,9 +267,7 @@ defmodule MrEric.Tools.PolicyTest do
             "git diff --color /etc"
           ] do
         assert {:error, :outside_workspace} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be refused"
       end
     end
@@ -289,9 +281,7 @@ defmodule MrEric.Tools.PolicyTest do
             "git status --untracked-files=all"
           ] do
         assert {:ok, %{approval_required?: true}} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be allowed"
       end
     end
@@ -315,7 +305,11 @@ defmodule MrEric.Tools.PolicyTest do
             entry <- flatten("git #{sub}", g),
             do: entry
 
-      globals = flatten("git", %{short: @grammar.programs["git"].short, long: @grammar.programs["git"].long})
+      globals =
+        flatten("git", %{
+          short: @grammar.programs["git"].short,
+          long: @grammar.programs["git"].long
+        })
 
       programs ++ gits ++ globals
     end
@@ -417,9 +411,7 @@ defmodule MrEric.Tools.PolicyTest do
             "sed -nf../outside/script README.md"
           ] do
         assert {:error, :dangerous_command} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be refused"
       end
     end
@@ -448,9 +440,7 @@ defmodule MrEric.Tools.PolicyTest do
             "grep --devices=read needle f.txt"
           ] do
         assert {:error, :dangerous_command} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be refused"
       end
     end
@@ -464,18 +454,14 @@ defmodule MrEric.Tools.PolicyTest do
             "rg -nf../outside/patterns f.txt"
           ] do
         assert {:error, :outside_workspace} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be refused"
       end
     end
 
     test "a value-taking option with no value is invalid_args", %{workspace: workspace} do
       assert {:error, :invalid_args} =
-               Policy.authorize(:shell_command, %{command: "grep -f"},
-                 workspace_root: workspace
-               )
+               Policy.authorize(:shell_command, %{command: "grep -f"}, workspace_root: workspace)
     end
 
     test "a pattern value is not resolved as a path", %{workspace: workspace} do
@@ -485,9 +471,7 @@ defmodule MrEric.Tools.PolicyTest do
             "grep -- -f../needle f.txt"
           ] do
         assert {:ok, %{approval_required?: true}} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be allowed"
       end
     end
@@ -529,9 +513,7 @@ defmodule MrEric.Tools.PolicyTest do
             "git show --stat"
           ] do
         assert {:ok, %{approval_required?: true}} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 ),
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace),
                "expected #{command} to be allowed"
       end
     end
@@ -608,9 +590,7 @@ defmodule MrEric.Tools.PolicyTest do
             {"git status --short", "git"}
           ] do
         assert {:ok, %{approval_required?: true}} =
-                 Policy.authorize(:shell_command, %{command: command},
-                   workspace_root: workspace
-                 )
+                 Policy.authorize(:shell_command, %{command: command}, workspace_root: workspace)
 
         assert {:ok, [^program | _rest]} = Policy.command_argv(command)
       end
