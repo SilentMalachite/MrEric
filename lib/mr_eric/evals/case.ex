@@ -85,6 +85,13 @@ defmodule MrEric.Evals.Case do
   from the list, an unknown classification became `nil`, which is the value
   that switches `Scorer.assert_error_classification/3` off -- so a typo made
   the suite assert less and still report green.
+
+  **Type is part of "recognized".** A vocabulary check alone still let
+  `"expected_no_secret_leak": "true"` through as the string `"true"`, which
+  does not match `Scorer`'s `%{expected_no_secret_leak: true}` clause -- so
+  the quotes, not a typo, silently switched the secret scan off. Every field
+  is checked for shape here, and a present-but-wrongly-typed value raises
+  exactly like an unrecognized one.
   """
   def from_map!(map) when is_map(map) do
     name = string_field(map, "name")
@@ -94,18 +101,29 @@ defmodule MrEric.Evals.Case do
       task: string_field(map, "task"),
       scenario: string_field(map, "scenario"),
       approval_action: approval_action!(name, Map.get(map, "approval_action")),
-      cancel_after_ms: Map.get(map, "cancel_after_ms"),
-      fail_role: Map.get(map, "fail_role"),
+      cancel_after_ms: cancel_after_ms!(name, Map.get(map, "cancel_after_ms")),
+      fail_role: fail_role!(name, Map.get(map, "fail_role")),
       requires: requires!(name, Map.get(map, "requires")),
       expected_status: status!(name, Map.get(map, "expected_status")),
-      expected_final_contains: list_field(map, "expected_final_contains"),
+      expected_final_contains:
+        string_list!(name, "expected_final_contains", Map.get(map, "expected_final_contains")),
       expected_events: events!(name, "expected_events", Map.get(map, "expected_events")),
       forbidden_events: events!(name, "forbidden_events", Map.get(map, "forbidden_events")),
-      expected_no_secret_leak: Map.get(map, "expected_no_secret_leak", true),
-      expected_approval_required: Map.get(map, "expected_approval_required", false),
-      expected_tool_denied: Map.get(map, "expected_tool_denied", false),
-      expected_tool_rejected: Map.get(map, "expected_tool_rejected", false),
-      expected_patch_applied: Map.get(map, "expected_patch_applied"),
+      expected_no_secret_leak:
+        boolean!(name, "expected_no_secret_leak", Map.get(map, "expected_no_secret_leak"), true),
+      expected_approval_required:
+        boolean!(
+          name,
+          "expected_approval_required",
+          Map.get(map, "expected_approval_required"),
+          false
+        ),
+      expected_tool_denied:
+        boolean!(name, "expected_tool_denied", Map.get(map, "expected_tool_denied"), false),
+      expected_tool_rejected:
+        boolean!(name, "expected_tool_rejected", Map.get(map, "expected_tool_rejected"), false),
+      expected_patch_applied:
+        boolean!(name, "expected_patch_applied", Map.get(map, "expected_patch_applied"), nil),
       expected_error_classification:
         classification!(name, Map.get(map, "expected_error_classification"))
     }
@@ -128,13 +146,35 @@ defmodule MrEric.Evals.Case do
 
   defp string_field(map, field), do: Map.get(map, field) || ""
 
-  defp list_field(map, field) do
-    case Map.get(map, field, []) do
-      values when is_list(values) -> values
-      value when is_binary(value) -> [value]
-      _other -> []
-    end
+  defp boolean!(_name, _field, nil, default), do: default
+  defp boolean!(_name, _field, value, _default) when is_boolean(value), do: value
+
+  defp boolean!(name, field, value, _default),
+    do: bad!(name, field, value, [true, false])
+
+  defp string_list!(_name, _field, nil), do: []
+  defp string_list!(_name, _field, value) when is_binary(value), do: [value]
+
+  defp string_list!(name, field, values) when is_list(values) do
+    Enum.map(values, fn
+      value when is_binary(value) -> value
+      value -> bad!(name, field, value, ["a string"])
+    end)
   end
+
+  defp string_list!(name, field, value), do: bad!(name, field, value, ["a list of strings"])
+
+  defp cancel_after_ms!(_name, nil), do: nil
+
+  defp cancel_after_ms!(_name, value) when is_integer(value) and value >= 0, do: value
+
+  defp cancel_after_ms!(name, value),
+    do: bad!(name, "cancel_after_ms", value, ["a non-negative integer"])
+
+  defp fail_role!(_name, nil), do: nil
+  defp fail_role!(_name, value) when is_atom(value), do: value
+  defp fail_role!(_name, value) when is_binary(value), do: value
+  defp fail_role!(name, value), do: bad!(name, "fail_role", value, ["a role name"])
 
   defp status!(_name, nil), do: :completed
   defp status!(_name, value) when is_atom(value), do: value

@@ -58,6 +58,35 @@ defmodule MrEric.Evals.CaseTest do
     end
   end
 
+  test "from_map!/1 raises on a boolean field that is a string" do
+    # A vocabulary check alone let this through: `"true"` does not match
+    # Scorer's `%{expected_no_secret_leak: true}` clause, so the quotes -- not
+    # a typo -- switched the secret scan off.
+    for field <- ~w(expected_no_secret_leak expected_approval_required
+                    expected_tool_denied expected_tool_rejected expected_patch_applied) do
+      assert_raise ArgumentError, ~r/#{field}.*"true"/, fn ->
+        EvalCase.from_map!(base(%{field => "true"}))
+      end
+    end
+  end
+
+  test "from_map!/1 keeps booleans that are actually booleans" do
+    eval_case = EvalCase.from_map!(base(%{"expected_no_secret_leak" => false}))
+    assert eval_case.expected_no_secret_leak == false
+  end
+
+  test "from_map!/1 raises on a non-string entry in expected_final_contains" do
+    assert_raise ArgumentError, ~r/expected_final_contains.*42/, fn ->
+      EvalCase.from_map!(base(%{"expected_final_contains" => ["ok", 42]}))
+    end
+  end
+
+  test "from_map!/1 raises on a non-integer cancel_after_ms" do
+    assert_raise ArgumentError, ~r/cancel_after_ms.*"500"/, fn ->
+      EvalCase.from_map!(base(%{"cancel_after_ms" => "500"}))
+    end
+  end
+
   test "the raised message names the case so a broken fixture is findable" do
     assert_raise ArgumentError, ~r/"demo"/, fn ->
       EvalCase.from_map!(base(%{"expected_status" => "faield"}))
