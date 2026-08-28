@@ -57,6 +57,32 @@ defmodule MrEric.Evals.ScorerTest do
     assert result.failed_assertions == [:missing_trace]
   end
 
+  test "an empty trace fails with :empty_trace rather than passing vacuously" do
+    # A readable-but-empty trace is the same vacuum as a missing one: every
+    # forbidden event is absent from `[]`, so the assertion passes precisely
+    # when nothing was observable. No real run produces one -- RunWorker
+    # records run_started before anything else.
+    eval_case = %EvalCase{
+      name: "empty",
+      expected_status: :cancelled,
+      forbidden_events: [:run_completed]
+    }
+
+    actual = %{status: :cancelled, final: "", trace: trace_with([])}
+
+    assert {:error, result} = Scorer.score(eval_case, actual)
+    assert result.failed_assertions == [:empty_trace]
+  end
+
+  test "an empty raw entries list fails the same way" do
+    eval_case = %EvalCase{name: "empty_entries", expected_status: :completed}
+
+    assert {:error, result} =
+             Scorer.score(eval_case, %{status: :completed, final: "", trace: %{entries: []}})
+
+    assert result.failed_assertions == [:empty_trace]
+  end
+
   test "the raw entries shape is still readable" do
     eval_case = %EvalCase{
       name: "entries",

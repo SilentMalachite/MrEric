@@ -6,6 +6,15 @@ defmodule MrEric.EvalsTest do
   alias MrEric.Evals.Case, as: EvalCase
   alias MrEric.Evals.Scorer
 
+  # `Scorer` refuses to score an entry-less trace, so a hand-built `actual`
+  # has to look like something a run could actually have produced. Every real
+  # run records `run_started` before anything else.
+  defp started_trace(id) do
+    id
+    |> MrEric.Runs.Trace.new("task", :fake, "fake-model")
+    |> MrEric.Runs.Trace.record(:run_started, %{})
+  end
+
   test "list_cases/0 returns deterministic golden cases" do
     names = Evals.list_cases() |> Enum.map(& &1.name)
 
@@ -42,7 +51,7 @@ defmodule MrEric.EvalsTest do
     actual = %{
       status: :failed,
       final: "different",
-      trace: MrEric.Runs.Trace.new("bad", "task", :fake, "fake")
+      trace: started_trace("bad")
     }
 
     assert {:error, failure} = Scorer.score(eval_case, actual)
@@ -61,7 +70,7 @@ defmodule MrEric.EvalsTest do
     actual = %{
       status: :completed,
       final: "OPENAI_API_KEY=sk-dummysecret123456789",
-      trace: MrEric.Runs.Trace.new("leaky", "task", :fake, "fake")
+      trace: started_trace("leaky")
     }
 
     assert {:error, failure} = Scorer.score(eval_case, actual)
@@ -127,7 +136,7 @@ defmodule MrEric.EvalsTest do
       status: :completed,
       final: "",
       plan: %{content: "OPENAI_API_KEY=sk-plantedsecret1234567890"},
-      trace: MrEric.Runs.Trace.new("planted", "task", :fake, "fake-model")
+      trace: started_trace("planted")
     }
 
     assert {:error, result} = Scorer.score(eval_case, actual)

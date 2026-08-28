@@ -32,8 +32,8 @@ defmodule MrEric.Evals.Scorer do
 
         result(eval_case, actual, summary, failures)
 
-      :error ->
-        result(eval_case, actual, %{}, [:missing_trace])
+      {:error, reason} ->
+        result(eval_case, actual, %{}, [reason])
     end
   end
 
@@ -151,13 +151,26 @@ defmodule MrEric.Evals.Scorer do
   # not scored against an empty event list -- `Enum.any?([], …)` is `false`, so
   # the "this event must not have happened" assertion used to pass precisely
   # when nothing could be observed.
+  #
+  # A trace that *is* readable but holds no entries is the same vacuum wearing
+  # a struct, and closing only the first half left it open: `Trace.new/4` with
+  # nothing recorded scored as a clean pass. No real run produces one --
+  # `RunWorker` records `run_started` from `handle_continue(:start, …)`, and
+  # the runner's failure branch records `run_failed` -- so an empty trace means
+  # the harness, not the run, is broken. It is reported separately from
+  # `:missing_trace` because the two say different things about what went
+  # wrong.
+  defp trace_view(%{trace: %Trace{entries: []}}), do: {:error, :empty_trace}
+
   defp trace_view(%{trace: %Trace{} = trace}),
     do: {:ok, Trace.events(trace), Trace.summary(trace)}
+
+  defp trace_view(%{trace: %{entries: []}}), do: {:error, :empty_trace}
 
   defp trace_view(%{trace: %{entries: entries}}) when is_list(entries),
     do: {:ok, Enum.map(entries, & &1.event), %{}}
 
-  defp trace_view(_actual), do: :error
+  defp trace_view(_actual), do: {:error, :missing_trace}
 
   defp expected_summary(eval_case) do
     eval_case
